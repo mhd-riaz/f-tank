@@ -1,32 +1,37 @@
 ---
-description: "Use when writing task loops, ISRs, sensor polling, network handlers, or control algorithms. Enforces runtime-efficient patterns for ESP32 — CPU cycle awareness, task scheduling, power management, and real-time responsiveness."
+description: "Apply when writing task loops, ISRs, sensor polling, network handlers, control/PID algorithms, or power management. Enforces ESP32 runtime efficiency — CPU cycles, FreeRTOS scheduling, non-blocking I/O, and deterministic timing."
 applyTo: "**/*.{cpp,c,h,hpp,ino}"
 ---
 
 # Runtime Optimization — ESP32 Firmware
 
-## CPU Cycle Awareness
+> Goal: cooperative, non-blocking, deterministic timing. No core ever busy-waits; no ISR ever does real work.
 
-- ESP32 dual-core at 240MHz — use both cores for parallelism (Core 0: network, Core 1: sensors/control)
-- Avoid floating-point math in tight loops — ESP32 has no FPU hardware for double, only single-precision float
-- Use integer arithmetic and fixed-point where possible in ISRs and high-frequency paths
-- Replace `pow()`, `sqrt()` with lookup tables or linear approximations for non-critical calculations
+## NEVER (reject the code if violated)
 
-## Task Scheduling (FreeRTOS)
+- NEVER use `delay()` in tasks/loops — use `vTaskDelay(pdMS_TO_TICKS(ms))` so the CPU yields.
+- NEVER do heavy work in an ISR — keep it < 5µs; defer to a task via queue/semaphore.
+- NEVER block indefinitely on network/serial reads — every read has a timeout.
+- NEVER poll a sensor faster than its physical update rate — it wastes cycles on stale data.
 
-- Use `vTaskDelay()` not `delay()` — yields CPU to other tasks instead of busy-waiting
-- Set task priorities based on criticality: safety checks > control loops > logging > display
-- Pin time-critical tasks to a specific core with `xTaskCreatePinnedToCore()`
-- Keep ISRs under 5μs — defer work to tasks via queues or semaphores
+## ALWAYS
+
+- ALWAYS split work across cores: Core 0 for network, Core 1 for sensors/control via `xTaskCreatePinnedToCore()`.
+- ALWAYS prioritize tasks by criticality: safety > control > logging > display.
+- ALWAYS prefer integer/fixed-point math in hot paths and ISRs (ESP32 FPU is single-precision `float` only; `double` is slow).
+- ALWAYS debounce interrupt-driven inputs in software (50–100ms).
+- ALWAYS gate verbose logging — `Serial.print()` at 115200 baud is ~1ms per 11 chars.
+
+## Cooperative Task Pattern
 
 ```cpp
-// WRONG — blocks entire core
+// WRONG — blocks the entire core
 void loop() {
-  delay(1000);  // busy-wait, no yielding
+  delay(1000);     // busy-wait, no yielding
   readSensors();
 }
 
-// CORRECT — cooperative multitasking
+// CORRECT — yields to scheduler
 void sensorTask(void* param) {
   for (;;) {
     readSensors();
@@ -35,48 +40,41 @@ void sensorTask(void* param) {
 }
 ```
 
-## Polling vs Interrupts
-
-- Use hardware interrupts for edge-triggered events (flow sensors, buttons, alarms)
-- Use timer-based polling for periodic reads (temperature, pH — no faster than physical response time)
-- Never poll faster than sensor update rate — wastes CPU cycles for stale data
-- Debounce interrupt-driven inputs in software (50–100ms window)
-
-## Network Efficiency
-
-- Use non-blocking network calls — never `while(!client.available())` without timeout
-- Batch telemetry: send one MQTT message with multiple readings vs one per sensor
-- Use QoS 0 for frequent sensor data, QoS 1 only for commands/alerts
-- Keep MQTT payloads compact: binary or msgpack over verbose JSON for high-frequency data
-
-## Power Management
-
-- Use `esp_sleep_enable_timer_wakeup()` for periodic deep sleep between readings if battery-powered
-- Disable unused peripherals: `WiFi.mode(WIFI_OFF)` when not transmitting
-- Reduce CPU frequency during idle periods: `setCpuFrequencyMhz(80)` for light tasks
-- Use light sleep for sub-second wake intervals, deep sleep for minutes+
-
-## Control Loop Timing
-
-- Use `micros()` for precise loop timing — never rely on `delay()` for control frequency
-- Implement fixed-timestep control loops with drift compensation
-- PID loops: compute dt from actual elapsed time, not assumed constant
-- Log loop overruns — if a cycle takes longer than budget, flag it
+## Deterministic Control Loops
 
 ```cpp
+// Fixed-timestep using real elapsed time, not assumed constants
 static uint32_t lastRunUs = 0;
 void controlLoop() {
   uint32_t now = micros();
+  if (now - lastRunUs < CONTROL_PERIOD_US) return;  // not time yet
   uint32_t dt = now - lastRunUs;
-  if (dt < CONTROL_PERIOD_US) return;  // not time yet
   lastRunUs = now;
-  // ... PID computation using actual dt ...
+  // PID uses actual dt; flag/log if dt overruns the budget
 }
 ```
 
-## Avoid Common Performance Traps
+## Polling vs Interrupts
 
-- `Serial.print()` in production loops: UART is slow (115200 baud ≈ 1ms per 11 chars) — use conditional logging
-- Repeated WiFi reconnection attempts without backoff: burns CPU and floods the network
-- String concatenation in loops: each `+` allocates and copies — use `snprintf` to fixed buffer
-- Recursive functions on embedded: stack depth is limited — convert to iterative
+- Edge events (flow sensors, buttons, alarms) → hardware interrupts.
+- Periodic reads (temperature, pH) → timer-based polling at the sensor's response rate.
+
+## Network Efficiency
+
+- Batch telemetry into one MQTT message instead of one per sensor.
+- QoS 0 for frequent sensor data; QoS 1 only for commands/alerts.
+- Keep high-frequency payloads compact (binary/msgpack over verbose JSON).
+- Reconnect with exponential backoff — never tight-loop reconnection.
+
+## Power Management (battery builds)
+
+- Deep sleep between readings: `esp_sleep_enable_timer_wakeup()`; light sleep for sub-second intervals.
+- Power down idle peripherals (`WiFi.mode(WIFI_OFF)` when not transmitting).
+- Lower clock for light work: `setCpuFrequencyMhz(80)`.
+
+## Self-check before finishing
+
+1. No `delay()` in tasks; all reads have timeouts?
+2. ISRs < 5µs with work deferred to tasks?
+3. Control timing derived from `micros()`/real `dt`?
+4. Hot paths use integer/fixed-point and gated logging?

@@ -1,58 +1,73 @@
 ---
-description: "Use when writing or reviewing any code. Enforces code quality standards for ESP32 Arduino firmware — naming conventions, structure, static analysis compliance, testability, and maintainability."
+description: "Apply when writing, refactoring, or reviewing any C/C++/Arduino firmware. Enforces ESP32 code quality — naming, file structure, compiler hygiene, error handling, static analysis, testability, and documentation."
 applyTo: "**/*.{cpp,c,h,hpp,ino}"
 ---
 
-# Code Quality Standards — ESP32 Firmware
+# Code Quality — ESP32 Firmware
 
-## Naming & Structure
+> Goal: every change compiles clean under `-Wall -Wextra -Werror`, fails loudly on error, and keeps logic testable without hardware.
 
-- Use `camelCase` for local variables and functions, `PascalCase` for classes/structs, `UPPER_SNAKE` for constants and macros
-- One responsibility per file — separate sensor drivers, network handlers, and control logic
-- Header files use include guards: `#ifndef FILENAME_H` / `#define FILENAME_H`
-- Keep functions under 40 lines — extract helpers for readability
+## NEVER (reject the code if violated)
 
-## Compiler Discipline
+- NEVER leave a failure path silent — every fallible function returns a status or sets an error out-param.
+- NEVER ship compiler warnings; `-Wall -Wextra -Werror` must pass with no suppression unless justified inline.
+- NEVER put business logic directly in `setup()`/`loop()` — delegate to modules.
+- NEVER use a raw `int` for error states — use a typed `enum class`.
 
-- Compile with `-Wall -Wextra -Werror` — no warnings allowed without documented justification
-- Use `static` for file-scoped functions and variables — minimize global namespace pollution
-- Prefer `const` and `constexpr` over `#define` for typed constants
-- Mark unused parameters explicitly: `(void)param;`
+## ALWAYS
 
-## Error Handling
+- ALWAYS name by convention: `camelCase` (vars/functions), `PascalCase` (classes/structs), `UPPER_SNAKE` (constants/macros).
+- ALWAYS encode units into names: `temperatureCelsius`, `intervalMs`, `pressureKpa`.
+- ALWAYS mark file-scoped functions/vars `static`; prefer `const`/`constexpr` over `#define` for typed constants.
+- ALWAYS guard headers: `#ifndef FILE_H` / `#define FILE_H` / `#endif`.
+- ALWAYS keep functions ≤ 40 lines and single-responsibility — extract helpers otherwise.
+- ALWAYS mark intentionally unused params: `(void)param;`.
 
-- Every function that can fail must return a status code or use an error parameter
-- Never silently swallow errors — log at minimum, recover or escalate at best
-- Use enum error codes, not raw integers: `enum class SensorError { OK, TIMEOUT, CRC_FAIL };`
-- Critical failures (heap exhaustion, WDT trigger) must log to persistent storage before reset
+## Error Handling Pattern
 
-## Code Organization
+```cpp
+// Typed, explicit, non-silent
+enum class SensorError { OK, TIMEOUT, CRC_FAIL };
+
+SensorError readTemperature(float& outCelsius) {
+  if (!sensor.ready()) return SensorError::TIMEOUT;   // fail loud, caller decides
+  // ...
+  return SensorError::OK;
+}
+```
+
+- Critical failures (heap exhaustion, WDT trigger) MUST log to persistent storage before reset.
+
+## File Organization (one responsibility per file)
 
 ```
 src/
-  main.cpp          — setup() and loop(), minimal logic
-  sensors/          — one file per sensor driver
-  network/          — WiFi, MQTT, HTTP handlers
-  control/          — tank automation logic
-  config/           — pin definitions, thresholds, secrets.h
-include/
-  *.h               — public interfaces only
+  main.cpp      — setup()/loop() only, wiring not logic
+  sensors/      — one driver per file
+  network/      — WiFi, MQTT, HTTP handlers
+  control/      — tank automation / PID logic
+  config/       — pins.h, thresholds, secrets.h (git-ignored)
+include/        — public interfaces only
 ```
 
-## Static Analysis & Linting
+## Testability (required for logic code)
 
-- Run `cppcheck` or PlatformIO's built-in checks before committing
-- Address all high/medium severity findings — suppress only with inline justification comment
-- Use `clang-format` with project `.clang-format` file for consistent style
+- Hide hardware behind interfaces so sensors can be mocked.
+- Keep pure logic (PID, thresholds, conversions) free of hardware calls so it runs under PlatformIO native `test/`.
 
-## Testability
+## Static Analysis (run before commit)
 
-- Separate hardware access behind interfaces — mock sensors in unit tests
-- Pure logic functions (PID calculations, threshold checks) must be testable without hardware
-- Use PlatformIO's `test/` framework for native unit tests
+- Run `cppcheck` / PlatformIO check; resolve all high/medium findings (suppress only with an inline reason).
+- Format with `clang-format` using the project `.clang-format`.
 
-## Documentation
+## Documentation (minimal, useful)
 
-- Every public function: one-line `@brief` describing what it does, not how
-- Document units in variable names or comments: `temperatureCelsius`, `intervalMs`
-- Pin assignments documented in a central `pins.h` with physical location comments
+- One-line `@brief` per public function describing _what_, not _how_.
+- Centralize pin assignments in `pins.h` with physical-location comments.
+
+## Self-check before finishing
+
+1. Builds clean under `-Wall -Wextra -Werror`?
+2. Every failure path returns/propagates a typed error?
+3. Functions ≤ 40 lines, single responsibility, correctly named?
+4. Logic separated from hardware and unit-testable?

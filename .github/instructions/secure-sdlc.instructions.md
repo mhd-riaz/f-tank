@@ -1,43 +1,46 @@
 ---
-description: "Use when writing, reviewing, or modifying any firmware code. Enforces secure software development lifecycle practices for ESP32 embedded systems — threat modeling, input validation, secure boot, OTA integrity, and pre-commit security checks."
+description: "Apply when writing, reviewing, or modifying any firmware, especially network-facing code, OTA, boot, or secrets handling. Enforces secure SDLC for ESP32 — threat modeling, input validation, secure boot, flash/OTA integrity, and pre-commit checks."
 applyTo: "**/*.{cpp,c,h,hpp,ino}"
 ---
 
-# Secure Software Development Lifecycle (SDLC) — ESP32 Firmware
+# Secure SDLC — ESP32 Firmware
 
-## Threat Modeling
+> Goal: treat every external input as hostile and every secret as already-leaked-if-plaintext. Security is a build gate, not a follow-up.
 
-- Identify attack surfaces before implementing any network-facing feature (WiFi, MQTT, HTTP, BLE)
-- Document trust boundaries: sensor inputs, serial console, network interfaces, flash storage
-- Assume all external inputs (serial, network, sensor ADC) are untrusted
+## NEVER (reject the code if violated)
 
-## Secure Boot & Flash Integrity
+- NEVER hardcode WiFi passwords, API keys, or tokens in source — load from git-ignored `secrets.h` or encrypted NVS.
+- NEVER pass raw network/serial/ADC data into business logic without validation.
+- NEVER apply an OTA image without verifying its signature and SHA-256 hash first.
+- NEVER commit `TODO: fix security` / `// HACK` on a security path without a linked tracking issue.
 
-- Enable ESP32 secure boot v2 in production builds
-- Use flash encryption for sensitive credentials and configuration
-- Never store plaintext WiFi passwords, API keys, or tokens in source — use NVS encrypted partition
-- Validate firmware signatures during OTA updates before applying
+## ALWAYS
 
-## Input Validation at System Boundaries
+- ALWAYS treat serial, network, BLE, and sensor ADC as untrusted trust boundaries.
+- ALWAYS validate sensor readings against physically plausible ranges before use.
+- ALWAYS length-check and sanitize incoming payloads (MQTT, HTTP params) and reject malformed packets early.
+- ALWAYS enable Secure Boot v2 and flash encryption in production builds.
+- ALWAYS treat compiler warnings as errors (`-Werror`); no suppression without written justification.
 
-- Validate all sensor readings against physical plausible ranges before processing
-- Sanitize and length-check all incoming network payloads (MQTT messages, HTTP params)
-- Reject malformed packets early — never pass raw network data to business logic
+## Threat Modeling (do this before coding a network feature)
+
+- Enumerate the attack surface (WiFi, MQTT, HTTP, BLE) and document trust boundaries.
+- Add a one-line threat note in comments for each network-facing function (what input, what risk, what mitigation).
 
 ## Secrets Management
 
-- Use `#include` for credentials from a git-ignored `secrets.h` — never hardcode
-- Rotate credentials if they appear in version control history
-- Use hardware-backed key storage (ESP32 eFuse) for production secrets
+- Store production secrets in hardware-backed storage (ESP32 eFuse) or encrypted NVS.
+- If a secret ever entered version control, rotate it — do not just delete it.
 
 ## OTA Update Security
 
-- Require HTTPS with certificate pinning for OTA download endpoints
-- Verify firmware hash (SHA-256 minimum) before flashing
-- Implement rollback mechanism — if new firmware fails health check, revert to last-known-good
+- Download over HTTPS with certificate pinning.
+- Verify firmware hash (SHA-256 minimum) and signature before flashing.
+- Keep dual-bank rollback: if new firmware fails its health check, revert to last-known-good.
 
-## Pre-Commit Checks
+## Self-check before finishing
 
-- No `TODO: fix security` or `// HACK` in committed code without a linked issue
-- All network-facing functions must have an associated threat note in comments
-- Compiler warnings treated as errors (`-Werror`) — no suppression without justification
+1. No plaintext secrets; secrets sourced from `secrets.h`/encrypted NVS?
+2. Every external input validated/length-checked at its boundary?
+3. OTA path verifies signature + hash and can roll back?
+4. Each network-facing function has a threat note; build is `-Werror` clean?

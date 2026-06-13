@@ -1,28 +1,28 @@
 ---
-description: "Use when allocating memory, creating buffers, using strings, or designing data structures. Enforces memory-efficient patterns for ESP32 (520KB SRAM, ~300KB usable heap) — stack discipline, heap hygiene, and fragmentation avoidance."
+description: "Apply when allocating memory, sizing buffers, handling strings, or designing structs/data layouts on ESP32 (~520KB SRAM, ~300KB usable heap). Enforces stack discipline, heap hygiene, and fragmentation avoidance."
 applyTo: "**/*.{cpp,c,h,hpp,ino}"
 ---
 
 # Memory Optimization — ESP32 Firmware
 
-## Heap Budget Awareness
+> Goal: stable long-running heap with no fragmentation creep. The enemy is repeated dynamic allocation.
 
-- ESP32 has ~300KB usable heap — always check `ESP.getFreeHeap()` after major allocations
-- Set a heap floor (e.g., 30KB minimum free) — if crossed, disable non-essential features
-- Log heap usage at boot and periodically for leak detection
+## NEVER (reject the code if violated)
 
-## Stack Discipline
+- NEVER call `malloc`/`new`/`String` growth inside `loop()` or any periodic task — pre-allocate at init.
+- NEVER declare large arrays on the stack (e.g. `char buf[4096]`) — task stacks are 4–8KB.
+- NEVER use the Arduino `String` class in production paths — it fragments the heap; use `char[]` + `snprintf`.
+- NEVER `malloc` without a guaranteed matching `free` in the same scope.
 
-- Default FreeRTOS task stack: 4KB–8KB — keep local variables small
-- Never declare large arrays on the stack: `char buf[4096]` on stack = stack overflow risk
-- Use `uxTaskGetStackHighWaterMark()` to validate stack sizing during development
-- Prefer static/global buffers for large fixed-size data, allocated once at init
+## ALWAYS
 
-## Avoid Dynamic Allocation in Loops
+- ALWAYS budget the heap: keep a floor (~30KB free); below it, disable non-essential features instead of crashing.
+- ALWAYS use the smallest sufficient integer type (`uint8_t` 0–255, `uint16_t` 0–65535).
+- ALWAYS pre-allocate large fixed-size buffers once as `static`/global.
+- ALWAYS size `ArduinoJson` with `StaticJsonDocument` (stack) over `DynamicJsonDocument` (heap); compute size via the ArduinoJson Assistant.
+- ALWAYS store constant lookup tables in flash with `PROGMEM`/`const`.
 
-- Never call `malloc`/`new` inside `loop()` or periodic tasks — pre-allocate at startup
-- If dynamic allocation is unavoidable, pair every `malloc` with `free` in the same scope
-- Prefer pool allocators or ring buffers for repeated same-size allocations
+## Allocation Pattern
 
 ```cpp
 // WRONG — heap fragmentation over time
@@ -32,35 +32,36 @@ void loop() {
   free(msg);
 }
 
-// CORRECT — pre-allocated buffer
+// CORRECT — pre-allocated, reused buffer
 static char msgBuffer[128];
 void loop() {
-  // ... use msgBuffer ...
+  snprintf(msgBuffer, sizeof(msgBuffer), "...");
 }
 ```
 
-## String Handling
+## Stack Discipline
 
-- Avoid `String` class (Arduino) in production — causes heap fragmentation
-- Use fixed `char[]` buffers with `snprintf` for string formatting
-- For JSON construction, use `ArduinoJson` with `StaticJsonDocument` (stack) over `DynamicJsonDocument` (heap)
-- Set JSON document size precisely using the ArduinoJson Assistant
+- Keep task locals small; validate sizing with `uxTaskGetStackHighWaterMark()` during development.
+- Prefer static/global storage for anything large.
 
-## Data Structure Sizing
+## Struct Packing
 
-- Use smallest sufficient integer types: `uint8_t` for values 0–255, `uint16_t` for 0–65535
-- Pack structs with `__attribute__((packed))` when alignment padding wastes RAM
-- Use bitfields for boolean flags: `struct { uint8_t pumpOn:1; uint8_t heaterOn:1; };`
-- Store lookup tables in flash with `PROGMEM` / `const` (ESP32 maps flash to address space)
+- Pack flags into bitfields: `struct { uint8_t pumpOn:1; uint8_t heaterOn:1; };`.
+- Use `__attribute__((packed))` only when padding genuinely wastes RAM (watch unaligned-access cost).
 
-## PSRAM Usage (if available)
+## PSRAM (if present)
 
-- Offload large buffers (display framebuffers, data logs) to PSRAM: `heap_caps_malloc(size, MALLOC_CAP_SPIRAM)`
-- Keep latency-critical data in internal SRAM
-- Check PSRAM availability at runtime: `ESP.getPsramSize()`
+- Offload large buffers (framebuffers, logs) to PSRAM: `heap_caps_malloc(size, MALLOC_CAP_SPIRAM)`.
+- Keep latency-critical data in internal SRAM. Check availability with `ESP.getPsramSize()`.
 
 ## Leak Detection
 
-- Monitor `ESP.getFreeHeap()` over time — any consistent downward trend indicates a leak
-- Use `heap_caps_check_integrity_all()` in debug builds to catch corruption early
-- Enable heap tracing (`heap_trace_start`) during development for allocation tracking
+- Log `ESP.getFreeHeap()` at boot and periodically — any steady downward trend is a leak.
+- In debug builds use `heap_caps_check_integrity_all()` and `heap_trace_start` to catch corruption/allocations.
+
+## Self-check before finishing
+
+1. Zero dynamic allocation inside loops/periodic tasks?
+2. No large stack arrays; no production `String` usage?
+3. Smallest integer types and pre-allocated buffers used?
+4. Free-heap logging in place to surface leaks?
