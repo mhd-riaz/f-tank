@@ -39,7 +39,7 @@ channel count from device provisioning/hardware config at runtime — no per-var
 ### Flash SKUs (cost optimization)
 
 The firmware builds in two flash profiles via compile-time feature flags
-([`src/config/features.h`](../src/config/features.h)), selected by PlatformIO environment:
+([`embedded/src/config/features.h`](../embedded/src/config/features.h)), selected by PlatformIO environment:
 
 | SKU | Flash | Env | Cloud | Persistent logging | OTA |
 |-----|-------|-----|:-----:|:------------------:|:---:|
@@ -216,10 +216,10 @@ streaming over the local API is available on both; only *persistent* logging req
 
 - **HR-1 Flash:** Two supported flash profiles (see *Flash SKUs* above):
   - **4 MB ("Basic" SKU):** dual ~1664 KB OTA app slots + NVS + tiny filesystem + coredump
-    ([`partitions_4mb.csv`](../partitions_4mb.csv)). Requires **cloud and persistent logging
+    ([`partitions_4mb.csv`](../embedded/partitions_4mb.csv)). Requires **cloud and persistent logging
     compiled out** (`FT_FEATURE_CLOUD=0`, `FT_FEATURE_SD_LOG=0`) so the image fits both OTA slots.
   - **8 MB ("Full" SKU):** dual ~3 MB OTA app slots + NVS + ~1.9 MB filesystem + coredump
-    ([`partitions_8mb.csv`](../partitions_8mb.csv)). Required for cloud TLS + persistent logging.
+    ([`partitions_8mb.csv`](../embedded/partitions_8mb.csv)). Required for cloud TLS + persistent logging.
   - **Signed OTA with rollback (FR-38/39) is mandatory on BOTH** — never ship a non-patchable fleet.
 - **HR-2 PSRAM:** Not required for the firmware feature set; if a module includes PSRAM it MAY be
   used for TLS/log buffers but MUST NOT be a hard dependency.
@@ -314,8 +314,8 @@ it can ever boot:
   Metadata travels in headers: `X-FW-Version`, `X-FW-SHA256`, `X-FW-Signature`.
 - **Integrity + authenticity:** the device computes the image SHA-256 incrementally, checks it
   against `X-FW-SHA256`, then verifies an **ECDSA P-256** signature over that digest against an
-  **embedded public key** ([`src/config/ota_pubkey.h`](../src/config/ota_pubkey.h)). The private key
-  stays offline in the release pipeline ([`scripts/sign_firmware.sh`](../scripts/sign_firmware.sh)).
+  **embedded public key** ([`src/config/ota_pubkey.h`](../embedded/src/config/ota_pubkey.h)). The private key
+  stays offline in the release pipeline ([`scripts/sign_firmware.sh`](../embedded/scripts/sign_firmware.sh)).
 - **Anti-rollback:** images that are not **strictly newer** than the running version are rejected.
 - **Rollback safety:** after activation + reboot, the new image must run healthy for a confirmation
   window before it is marked valid; otherwise the bootloader **rolls back** to the previous slot. No
