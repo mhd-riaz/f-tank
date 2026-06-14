@@ -1,0 +1,12 @@
+# f-tank partition table (4 MB flash) — "Basic" SKU (cost-optimized)
+# Dual OTA app slots enable signed OTA with rollback (FR-38, FR-39) even on 4 MB.
+# 4 MB = 0x400000. Each app slot is 0x1A0000 (1664 KB) and must hold the FULL
+# image. No cloud TLS and no persistent logging on this SKU (compiled out), so
+# the image fits with headroom. Tiny filesystem only for NVS-adjacent needs.
+# Name,     Type, SubType,  Offset,    Size,     Flags
+nvs,        data, nvs,      0x9000,    0x5000,
+otadata,    data, ota,      0xe000,    0x2000,
+app0,       app,  ota_0,    0x10000,   0x1A0000,
+app1,       app,  ota_1,    0x1B0000,  0x1A0000,
+littlefs,   data, spiffs,   0x350000,  0xA0000,
+coredump,   data, coredump, 0x3F0000,  0x10000,
