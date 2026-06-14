@@ -5,6 +5,8 @@
 #include "api/ApiValidation.h"
 #include "api/AuthToken.h"
 #include "network/NetworkStore.h"
+#include "ota/FirmwareVersion.h"
+#include "ota/OtaTypes.h"
 
 namespace api {
 namespace {
@@ -130,6 +132,13 @@ void LocalApiServer::registerRoutes() {
         // Read-only live push; inbound WS messages are ignored.
     });
     server_.addHandler(&ws_);
+
+    // Signed OTA upload (FR-38/39): metadata in headers, firmware in the body.
+    server_.on(
+        "/api/v1/ota", HTTP_POST,
+        [](AsyncWebServerRequest* request) { /* response sent from body handler */ }, nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index,
+               size_t total) { handleOtaUpload(request, data, len, index, total); });
 
     server_.onNotFound(
         [](AsyncWebServerRequest* request) { sendJsonError(request, 404, "not found"); });
@@ -287,6 +296,69 @@ void LocalApiServer::handlePutConfig(AsyncWebServerRequest* request, uint8_t* da
         return;
     }
     request->send(202, "application/json", "{\"status\":\"accepted\"}");
+}
+
+void LocalApiServer::handleOtaUpload(AsyncWebServerRequest* request, uint8_t* data, size_t len,
+                                     size_t index, size_t total) {
+    // First chunk: authorize, parse headers, and open the OTA session.
+    if (index == 0) {
+        if (!authorize(request)) {
+            sendJsonError(request, 401, "unauthorized");
+            return;
+        }
+        if (!request->hasHeader("X-FW-Version") || !request->hasHeader("X-FW-SHA256") ||
+            !request->hasHeader("X-FW-Signature")) {
+            sendJsonError(request, 400, "missing ota headers");
+            return;
+        }
+
+        ota::FirmwareVersion imageVer;
+        if (!ota::parseVersion(request->getHeader("X-FW-Version")->value().c_str(), imageVer)) {
+            sendJsonError(request, 400, "bad version");
+            return;
+        }
+        ota::FirmwareVersion currentVer;
+        ota::parseVersion(kFirmwareVersion, currentVer);
+
+        uint8_t expectedSha[ota::kSha256Len] = {0};
+        if (!ota::hexDecode(request->getHeader("X-FW-SHA256")->value().c_str(), expectedSha,
+                            sizeof(expectedSha))) {
+            sendJsonError(request, 400, "bad sha256");
+            return;
+        }
+
+        const char* sigHex = request->getHeader("X-FW-Signature")->value().c_str();
+        const size_t sigBytes = strlen(sigHex) / 2;
+        uint8_t signature[ota::kMaxSignatureLen] = {0};
+        if (sigBytes == 0 || sigBytes > sizeof(signature) ||
+            !ota::hexDecode(sigHex, signature, sigBytes)) {
+            sendJsonError(request, 400, "bad signature");
+            return;
+        }
+
+        const ota::OtaError err = ota_.begin(static_cast<uint32_t>(total), imageVer, currentVer,
+                                             expectedSha, signature, sigBytes);
+        if (err != ota::OtaError::kOk) {
+            sendJsonError(request, 400, "ota rejected");
+            return;
+        }
+    }
+
+    // Stream the chunk to flash.
+    if (len > 0 && ota_.write(data, len) != ota::OtaError::kOk) {
+        sendJsonError(request, 400, "ota write failed");
+        return;
+    }
+
+    // Last chunk: verify signature + hash and activate the new image.
+    if (index + len == total) {
+        if (ota_.finish() != ota::OtaError::kOk) {
+            sendJsonError(request, 400, "ota verification failed");
+            return;
+        }
+        // Reboot is triggered by the control loop once it sees rebootPending().
+        request->send(200, "application/json", "{\"status\":\"verified\",\"reboot\":true}");
+    }
 }
 
 void LocalApiServer::pushStatusToClients() {

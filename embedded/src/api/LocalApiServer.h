@@ -8,6 +8,7 @@
 #include "api/ConfigBroker.h"
 #include "api/StatusBroker.h"
 #include "network/NetworkStore.h"
+#include "ota/OtaUpdater.h"
 #include "storage/PersistentConfig.h"
 
 /**
@@ -24,12 +25,13 @@ namespace api {
 class LocalApiServer {
   public:
     LocalApiServer(network::NetworkStore& netStore, ConfigBroker& configBroker,
-                   StatusBroker& statusBroker)
+                   StatusBroker& statusBroker, ota::OtaUpdater& otaUpdater)
         : server_(80),
           ws_("/api/v1/ws"),
           netStore_(netStore),
           configBroker_(configBroker),
-          statusBroker_(statusBroker) {}
+          statusBroker_(statusBroker),
+          ota_(otaUpdater) {}
 
     /// Register routes and start listening. Call once WiFi is connected.
     void begin();
@@ -40,12 +42,19 @@ class LocalApiServer {
     /// Periodic servicing: prune WS clients, push status. Networking context.
     void loop(uint32_t nowMs);
 
+    /// True once a verified OTA image is staged and a reboot should occur.
+    bool otaRebootPending() const {
+        return ota_.rebootPending();
+    }
+
   private:
     bool authorize(AsyncWebServerRequest* request) const;
     void handleGetInfo(AsyncWebServerRequest* request);
     void handleGetStatus(AsyncWebServerRequest* request);
     void handleGetConfig(AsyncWebServerRequest* request);
     void handlePutConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len);
+    void handleOtaUpload(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index,
+                         size_t total);
     void registerRoutes();
     void pushStatusToClients();
 
@@ -54,6 +63,7 @@ class LocalApiServer {
     network::NetworkStore& netStore_;
     ConfigBroker& configBroker_;
     StatusBroker& statusBroker_;
+    ota::OtaUpdater& ota_;
 
     SemaphoreHandle_t configMutex_ = nullptr;
     storage::PersistentConfig configView_;

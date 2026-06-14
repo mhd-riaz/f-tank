@@ -16,6 +16,8 @@
 #include "api/StatusBroker.h"
 #include "api/TokenGenerator.h"
 #include "channel/ChannelController.h"
+#include "cloud/CloudClient.h"
+#include "cloud/CloudStore.h"
 #include "config/features.h"
 #include "config/pins.h"
 #include "control/SafetyController.h"
@@ -24,6 +26,7 @@
 #include "network/NetworkStore.h"
 #include "network/NtpClient.h"
 #include "network/WiFiManager.h"
+#include "ota/OtaUpdater.h"
 #include "provisioning/BleProvisioner.h"
 #include "schedule/Scheduler.h"
 #include "sensor/TemperatureSensor.h"
@@ -52,12 +55,23 @@ network::WiFiManager wifiManager(networkStore);
 network::NtpClient ntpClient(timeService);
 api::ConfigBroker configBroker;
 api::StatusBroker statusBroker;
-api::LocalApiServer apiServer(networkStore, configBroker, statusBroker);
+ota::OtaUpdater otaUpdater;
+api::LocalApiServer apiServer(networkStore, configBroker, statusBroker, otaUpdater);
 provisioning::BleProvisioner bleProvisioner(networkStore, configStore);
+#if FT_FEATURE_CLOUD
+cloud::CloudStore cloudStore;
+cloud::CloudClient cloudClient(cloudStore, configBroker, statusBroker, configStore);
+bool cloudStarted = false;
+#endif
 
 bool wifiWasConnected = false;
 bool ntpConfigured = false;
 bool apiStarted = false;
+bool otaBootConfirmed = false;
+
+// Uptime after which a freshly-OTA'd image is considered healthy and confirmed
+// (cancels bootloader rollback). Long enough to clear init + first network use.
+constexpr uint32_t kOtaHealthyConfirmMs = 30000;
 
 // Apply persisted config to scheduler + channels and drive outputs to their
 // schedule-correct state with zero flicker (FR-13): states are computed BEFORE
@@ -165,6 +179,9 @@ void setup() {
     configBroker.begin();
     statusBroker.begin();
     apiServer.publishConfig(configStore.config());
+#if FT_FEATURE_CLOUD
+    cloudStore.begin();
+#endif
     // BLE provisioning advertises only when no WiFi creds exist yet (AD-6).
     bleProvisioner.beginIfUnprovisioned();
     wifiManager.begin();
@@ -210,6 +227,30 @@ void loop() {
     }
     if (apiStarted) {
         apiServer.loop(nowMs);
+    }
+
+#if FT_FEATURE_CLOUD
+    // Cloud link (Subscription tier, 8 MB SKU). Additive; never blocks control.
+    if (wifiConnected) {
+        if (!cloudStarted) {
+            cloudClient.begin();
+            cloudStarted = true;
+        }
+        cloudClient.update(nowMs);
+    }
+#endif
+
+    // Confirm a freshly-OTA'd image once it has run healthy for a while; until
+    // then the bootloader would roll back on a crash (FR-38/39).
+    if (!otaBootConfirmed && nowMs >= kOtaHealthyConfirmMs) {
+        ota::OtaUpdater::confirmRunningImageValid();
+        otaBootConfirmed = true;
+    }
+    // A verified OTA image is staged -> reboot into it (flicker-free on boot).
+    if (apiServer.otaRebootPending()) {
+        Serial.println("OTA verified; rebooting into new image...");
+        Serial.flush();
+        ESP.restart();
     }
 
     // Apply any config staged by the API and publish live status (AD-1).
