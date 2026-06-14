@@ -2,6 +2,10 @@
 
 Cloud backend for f-tank. **Planned / not yet implemented.**
 
+> **Architecture:** see [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full target design
+> (Go microservices, PostgreSQL + TimescaleDB, EMQX, Kubernetes, Razorpay, AI platform). Draft v1 —
+> architecture only, no code yet.
+
 Responsibilities (per [`docs/REQUIREMENTS.md`](../docs/REQUIREMENTS.md)):
 
 - MQTT broker integration (device telemetry in, config/commands out) — see spec §7 Architecture
