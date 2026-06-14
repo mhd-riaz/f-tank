@@ -19,7 +19,7 @@ time-based schedules, monitors water temperature, and is configured via a compan
 - **Build system:** PlatformIO. Board env `esp32dev`; native logic tests under env `native`.
 - **Structure:** `src/main.cpp` (wiring only), `src/<module>/` per responsibility, `include/`
   (public interfaces), `src/config/` (`pins.h`, `secrets.h` git-ignored), `test/` (native unit
-  tests), `partitions.csv` (dual-OTA), `.clang-format`.
+  tests), `partitions.csv` (8 MB flash, dual-OTA), `.clang-format`.
 - **Flags:** `-Wall -Wextra -Werror` on our sources (`build_src_flags`); libs excluded.
 - Build: `pio run`. Test: `pio test -e native`. Static check: `pio check`.
 

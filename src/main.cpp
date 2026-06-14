@@ -11,7 +11,12 @@
 #include <Arduino.h>
 
 #include "alert/AlertManager.h"
+#include "api/ConfigBroker.h"
+#include "api/LocalApiServer.h"
+#include "api/StatusBroker.h"
+#include "api/TokenGenerator.h"
 #include "channel/ChannelController.h"
+#include "config/features.h"
 #include "config/pins.h"
 #include "control/SafetyController.h"
 #include "control/ScheduleRunner.h"
@@ -19,6 +24,7 @@
 #include "network/NetworkStore.h"
 #include "network/NtpClient.h"
 #include "network/WiFiManager.h"
+#include "provisioning/BleProvisioner.h"
 #include "schedule/Scheduler.h"
 #include "sensor/TemperatureSensor.h"
 #include "storage/ConfigStore.h"
@@ -44,9 +50,14 @@ storage::ConfigStore configStore;
 network::NetworkStore networkStore;
 network::WiFiManager wifiManager(networkStore);
 network::NtpClient ntpClient(timeService);
+api::ConfigBroker configBroker;
+api::StatusBroker statusBroker;
+api::LocalApiServer apiServer(networkStore, configBroker, statusBroker);
+provisioning::BleProvisioner bleProvisioner(networkStore, configStore);
 
 bool wifiWasConnected = false;
 bool ntpConfigured = false;
+bool apiStarted = false;
 
 // Apply persisted config to scheduler + channels and drive outputs to their
 // schedule-correct state with zero flicker (FR-13): states are computed BEFORE
@@ -81,6 +92,47 @@ void maybeSeedDevWifi() {
 #endif
 }
 
+// Build and publish a status snapshot for the API/WebSocket (AD-1).
+void publishStatus(uint32_t nowMs) {
+    (void)nowMs;
+    api::StatusSnapshot snap;
+    snap.temperatureC = temperature.celsius();
+    snap.temperatureValid = temperature.hasValidReading();
+    snap.activeAlertMask = alerts.activeMask();
+    snap.timeSource = static_cast<uint8_t>(timeService.source());
+    snap.wifiState = static_cast<uint8_t>(wifiManager.state());
+    snap.minuteOfDay = timeService.minutesSinceMidnight();
+    snap.channelCount = channels.count();
+    for (uint8_t i = 0; i < channels.count(); ++i) {
+        snap.channelEnergized[i] = channels.isEnergized(i);
+    }
+    statusBroker.publish(snap);
+}
+
+// Apply a config staged by the API: persist, re-apply to hardware, republish.
+void applyStagedConfig() {
+    storage::PersistentConfig incoming;
+    if (!configBroker.consume(incoming)) {
+        return;
+    }
+    configStore.config() = incoming;
+    configStore.save();  // write-on-change; persists user edits (FR-34)
+    applyConfig(timeService.minutesSinceMidnight());
+    apiServer.publishConfig(configStore.config());
+}
+
+// Issue a device bearer token on first use if none exists yet. BLE provisioning
+// will own this in production; this keeps the API usable for development.
+void ensureDeviceToken() {
+    if (networkStore.hasToken()) {
+        return;
+    }
+    char token[network::kTokenSize] = {0};
+    if (api::generateToken(token, sizeof(token)) && networkStore.setToken(token)) {
+        Serial.printf("Device token (dev): %s\n", token);
+    }
+}
+
 }  // namespace
 
 void setup() {
@@ -108,7 +160,13 @@ void setup() {
 
     // Connectivity (additive; never blocks scheduling, FR-1/FR-4).
     networkStore.begin();
+    ensureDeviceToken();
     maybeSeedDevWifi();
+    configBroker.begin();
+    statusBroker.begin();
+    apiServer.publishConfig(configStore.config());
+    // BLE provisioning advertises only when no WiFi creds exist yet (AD-6).
+    bleProvisioner.beginIfUnprovisioned();
     wifiManager.begin();
 }
 
@@ -121,6 +179,15 @@ void loop() {
 
     // Service connectivity and react to WiFi up/down edges.
     wifiManager.update(nowMs);
+
+    // BLE provisioning: when the app finishes, switch WiFi to the new creds.
+    bleProvisioner.update(nowMs);
+    if (bleProvisioner.justProvisioned()) {
+        bleProvisioner.clearProvisionedFlag();
+        ntpConfigured = false;  // re-arm NTP for the new connection
+        wifiManager.reconfigure();
+    }
+
     const bool wifiConnected = wifiManager.isConnected();
     if (wifiConnected && !wifiWasConnected) {
         if (!ntpConfigured) {
@@ -135,6 +202,19 @@ void loop() {
         ntpClient.update(nowMs);
     }
     alerts.set(alert::AlertId::kNtpFailure, ntpClient.inFailure());
+
+    // Start the local API once WiFi is up; then service it (AD-3/AD-5).
+    if (wifiConnected && !apiStarted) {
+        apiServer.begin();
+        apiStarted = true;
+    }
+    if (apiStarted) {
+        apiServer.loop(nowMs);
+    }
+
+    // Apply any config staged by the API and publish live status (AD-1).
+    applyStagedConfig();
+    publishStatus(nowMs);
 
     alerts.update(nowMs);
     displayManager.update(nowMs);

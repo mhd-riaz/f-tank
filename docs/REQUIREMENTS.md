@@ -36,6 +36,20 @@ runs on all hardware variants:
 The firmware MUST support up to **16 channels** (`kMaxChannels = 16`) and discover the actual
 channel count from device provisioning/hardware config at runtime — no per-variant build.
 
+### Flash SKUs (cost optimization)
+
+The firmware builds in two flash profiles via compile-time feature flags
+([`src/config/features.h`](../src/config/features.h)), selected by PlatformIO environment:
+
+| SKU | Flash | Env | Cloud | Persistent logging | OTA |
+|-----|-------|-----|:-----:|:------------------:|:---:|
+| **Basic** | 4 MB | `esp32_4mb_basic` | ❌ off | ❌ (on-demand stream only) | ✅ |
+| **Full** | 8 MB | `esp32_8mb_full` | ✅ | ✅ (SD / filesystem) | ✅ |
+
+Disabled features are **compiled out** (not linked), shrinking the 4 MB image so dual-OTA still
+fits. **OTA is enabled on both SKUs** — the fleet must remain security-patchable. On-demand log
+streaming over the local API is available on both; only *persistent* logging requires the 8 MB SKU.
+
 ---
 
 ## 2. Functional Requirements
@@ -190,13 +204,26 @@ channel count from device provisioning/hardware config at runtime — no per-var
 
 | Component | Part | Interface | Notes |
 |-----------|------|-----------|-------|
-| MCU | ESP32 | — | WiFi + BLE |
+| MCU | ESP32 (4 MB or 8 MB flash) | — | WiFi + BLE; flash SKU sets feature set (HR-1) |
 | RTC | DS3231 | I²C | Temp-compensated, NTP-synced, offline authority |
 | Temp sensor | DS18B20 | OneWire | CRC-validated, fixed address |
 | Display | SSD1306 128×32 | I²C | Status + rotation |
 | Relays | N channels | GPIO | NO/NC configurable per channel |
 | Buzzer | — | GPIO | Shared alert mechanism |
 | SD card | optional | SPI | Premium tier only |
+
+### 4.1 Hardware Requirements
+
+- **HR-1 Flash:** Two supported flash profiles (see *Flash SKUs* above):
+  - **4 MB ("Basic" SKU):** dual ~1664 KB OTA app slots + NVS + tiny filesystem + coredump
+    ([`partitions_4mb.csv`](../partitions_4mb.csv)). Requires **cloud and persistent logging
+    compiled out** (`FT_FEATURE_CLOUD=0`, `FT_FEATURE_SD_LOG=0`) so the image fits both OTA slots.
+  - **8 MB ("Full" SKU):** dual ~3 MB OTA app slots + NVS + ~1.9 MB filesystem + coredump
+    ([`partitions_8mb.csv`](../partitions_8mb.csv)). Required for cloud TLS + persistent logging.
+  - **Signed OTA with rollback (FR-38/39) is mandatory on BOTH** — never ship a non-patchable fleet.
+- **HR-2 PSRAM:** Not required for the firmware feature set; if a module includes PSRAM it MAY be
+  used for TLS/log buffers but MUST NOT be a hard dependency.
+
 
 ---
 
@@ -249,4 +276,34 @@ channel count from device provisioning/hardware config at runtime — no per-var
   with BLE bonding for link encryption; BLE stack shut down after WiFi is confirmed to reclaim RAM.
 - **AD-7 M2 build order:** WiFi+NTP → Local API + auth token → BLE provisioning. (BLE delivers the
   creds/token the other two consume, so their contracts are defined first.)
+
+### 7.1 Local API surface (v1)
+
+All `/api/v1/*` routes require `Authorization: Bearer <device-token>` (constant-time check); the
+API is fully locked until a token is provisioned. Plain HTTP on the LAN (AD-4). Writes are validated
+(NFR-8) and applied via the control-loop apply-queue (AD-1).
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/healthz` | Unauthenticated liveness probe |
+| GET | `/api/v1/info` | Firmware version, config version, channel count |
+| GET | `/api/v1/status` | Live: temp, alerts, time source, WiFi state, channel states |
+| GET | `/api/v1/config` | Full config (tz, thresholds, per-channel name/enable/schedule + read-only polarity) |
+| PUT | `/api/v1/config` | Update user-editable fields only (tz, thresholds, channel name/enable/schedule); polarity/gpio/cut-target stay as provisioned (FR-12) |
+| WS | `/api/v1/ws` | Live status push (~1 Hz) |
+
+Auth failures → `401`; invalid input → `400`; transient busy → `503`; accepted writes → `202`.
+
+### 7.2 BLE provisioning (onboarding)
+
+- **NimBLE** GATT service (chosen over Bluedroid for smaller flash/RAM). Advertises **only when
+  unprovisioned** (or after an explicit factory reset) to minimize attack surface and free RAM in
+  normal operation; **torn down** once provisioning succeeds (AD-6).
+- Characteristics require an **encrypted, bonded** link (NFR-5/8): SSID, password, timezone, and an
+  apply command are write-only-encrypted; status + the issued device token are read/notify-encrypted.
+- On apply: validates inputs, persists WiFi credentials + timezone to NVS, issues the device bearer
+  token to the app, then signals the control loop to (re)connect WiFi. All inputs are bounds-checked
+  via the same validators as the local API.
+
+
 
