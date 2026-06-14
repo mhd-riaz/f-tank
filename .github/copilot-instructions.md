@@ -9,10 +9,19 @@ time-based schedules, monitors water temperature, and is configured via a compan
 1. **[docs/REQUIREMENTS.md](../docs/REQUIREMENTS.md)** — the authoritative spec for the v2
    commercial product. Every change MUST align with it. Requirements are referenced by ID
    (`FR-*`, `NFR-*`); cite them when implementing or discussing features.
-2. **[esp32/main.ino](../esp32/main.ino)** — legacy v1 sketch. Treat as reference only; it has known
-   issues being designed out (see REQUIREMENTS §5 Migration Notes). Do not copy its anti-patterns.
+2. **Legacy v1 sketch** — removed (was `esp32/main.ino`). Its known issues and the v1→v2 changes
+   are captured in REQUIREMENTS §5 Migration Notes. Do not reintroduce its anti-patterns.
 3. **`.github/instructions/`** — mandatory engineering rules (auto-applied to `*.{cpp,c,h,hpp,ino}`).
    Always follow them when touching firmware.
+
+## Build & layout
+
+- **Build system:** PlatformIO. Board env `esp32dev`; native logic tests under env `native`.
+- **Structure:** `src/main.cpp` (wiring only), `src/<module>/` per responsibility, `include/`
+  (public interfaces), `src/config/` (`pins.h`, `secrets.h` git-ignored), `test/` (native unit
+  tests), `partitions.csv` (dual-OTA), `.clang-format`.
+- **Flags:** `-Wall -Wextra -Werror` on our sources (`build_src_flags`); libs excluded.
+- Build: `pio run`. Test: `pio test -e native`. Static check: `pio check`.
 
 ## Instruction files — when each applies
 
@@ -30,7 +39,7 @@ time-based schedules, monitors water temperature, and is configured via a compan
 - **Platform:** ESP32, WiFi + BLE. Standalone scheduling works with no network.
 - **Connectivity:** Hybrid — local LAN API (HTTP/WebSocket) always available; cloud optional and
   must never block scheduling or local control.
-- **Time:** NTP sync on every boot → updates DS1307 RTC (offline authority) → `millis()` soft-clock
+- **Time:** NTP sync on every boot → updates DS3231 RTC (offline authority) → `millis()` soft-clock
   fallback if both fail.
 - **Channels:** Generic N configurable relay channels. Each has name, enable flag, multi-window
   schedule (minutes-since-midnight, supports inverted OFF-windows), and **NO/NC polarity**.
@@ -43,7 +52,7 @@ time-based schedules, monitors water temperature, and is configured via a compan
 ## Hard rules (derived from spec + instructions)
 
 - **No blocking `delay()`** in the control path. Scheduling/I/O must be non-blocking (NFR-1).
-- **No `while(true)` trap** on faults — always keep the loop + watchdog alive (FR-25, NFR-2).
+- **No `while(true)` trap** on faults — always keep the loop + watchdog alive (FR-28, NFR-2).
 - **Separate logical state (on/off) from electrical polarity (NO/NC)** — never conflate relay level
   with intent (NFR-11).
 - **No flicker on boot/restart** — drive channels to schedule-correct state atomically (FR-13).

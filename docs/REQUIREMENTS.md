@@ -1,7 +1,7 @@
 # f-tank — Requirements Specification (v2)
 
 Automated aquarium controller. This document defines requirements for the **next-generation
-commercial product**, replacing the legacy Arduino-style sketch in [`esp32/main.ino`](../esp32/main.ino).
+commercial product**, replacing the legacy Arduino-style sketch (removed; formerly `esp32/main.ino`).
 
 - **Status:** Draft v2
 - **Target hardware:** ESP32 (WiFi + BLE capable)
@@ -24,6 +24,18 @@ The product ships in tiers:
 | **Premium** | + Local SD-card log storage |
 | **Subscription** | + Cloud log storage, remote access, historical analytics |
 
+Software tier (features) is **independent** of hardware variant (channel count). The same firmware
+runs on all hardware variants:
+
+| Variant | Relay channels | Analogy |
+|---------|----------------|---------|
+| **S** | 4 | base model |
+| **Plus** | 8 | mid model |
+| **Pro** | 16 (supports 12/16) | top model |
+
+The firmware MUST support up to **16 channels** (`kMaxChannels = 16`) and discover the actual
+channel count from device provisioning/hardware config at runtime — no per-variant build.
+
 ---
 
 ## 2. Functional Requirements
@@ -39,10 +51,13 @@ The product ships in tiers:
 
 ### 2.2 Time Management
 - **FR-5** On every boot, device MUST sync time from **NTP** when network is available.
-- **FR-6** RTC (DS1307) MUST be updated from NTP after a successful sync and used as the
+- **FR-6** RTC (DS3231) MUST be updated from NTP after a successful sync and used as the
   authoritative clock when offline.
 - **FR-7** If both NTP and RTC fail, device MUST raise an alert (see Notifications) and fall back to
   a `millis()`-based soft clock so scheduling degrades gracefully instead of halting.
+- **FR-7a** Device MUST apply a **timezone** so schedules run in local time. The timezone is a
+  **POSIX TZ string** (DST-aware), provisioned at onboarding and persisted in NVS, defaulting to
+  `UTC0`. NTP delivers UTC; the device converts to local time via the configured TZ.
 
 ### 2.3 WiFi Provisioning
 - **FR-8** First-time WiFi setup MUST use **BLE provisioning** (configure SSID/password via phone).
@@ -52,15 +67,24 @@ The product ships in tiers:
 
 ### 2.4 Relay Channel Control (Generic, configurable)
 - **FR-11** Outputs MUST be modeled as **N generic relay channels** (not hardcoded appliances).
-  Each channel is user-configurable: name, enabled flag, schedule, and relay polarity.
-- **FR-12** Each channel MUST support a **relay polarity / type** setting (Normally-Open vs
-  Normally-Closed, i.e. active-high vs active-low) so the same firmware works across relay hardware.
+  End-user-configurable per channel: name, enabled flag, and schedule. (Polarity is NOT
+  user-editable — see FR-12.)
+- **FR-12** Each channel has a **relay polarity** (active-high vs active-low) determined by the
+  relay hardware fitted at manufacture. It is **provisioned once** — stored server-side and set on
+  the device at customer registration, persisted in NVS — and is immutable at runtime (not part of
+  the schedule CRUD surface). The same firmware thus works across relay hardware variants.
 - **FR-13** On boot/restart, channels MUST be driven to their **schedule-correct state immediately**
   and atomically, avoiding output flicker/glitch (no transient toggle during init).
-- **FR-14** Each channel schedule MUST support multiple ON windows per day (start/end in
-  minutes-since-midnight), and an inverted "OFF-window" mode (e.g. pump = always on except listed
-  windows).
+- **FR-14** Each channel has its **own schedule** of time windows (start/end in
+  minutes-since-midnight). The window count is **user-defined** via the app, defaulting to **1**
+  window on a new channel and capped at **8 windows per channel** (bounded embedded storage).
+  A per-channel **`inverted` flag** flips meaning: normal = ON during windows; inverted = ON all day
+  *except* during windows (e.g. pump). A single window MAY **cross midnight** (start > end wraps).
 - **FR-15** Schedule evaluation MUST be deterministic and based on local time.
+- **FR-16** **Electrical load distribution:** when multiple channels must change state at the same
+  time, the firmware MUST **stagger** the relay transitions (apply them spaced apart, never all in
+  the same instant) to limit inrush current. Staggering MUST remain non-blocking and MUST NOT cause
+  flicker on any individual channel (each channel moves directly to its correct state).
 
 > Default factory config preserves the legacy behavior:
 > - **Light** 10:30–14:30, 17:00–20:00
@@ -70,58 +94,65 @@ The product ships in tiers:
 > These windows are intentional and must remain the seeded defaults.
 
 ### 2.5 Temperature Monitoring
-- **FR-16** Device MUST read water temperature from a DS18B20 (OneWire).
-- **FR-17** The sensor address MUST be discovered once and **cached** (single fixed sensor); reads
+- **FR-17** Device MUST read water temperature from a DS18B20 (OneWire).
+- **FR-18** The sensor address MUST be discovered once and **cached** (single fixed sensor); reads
   MUST NOT re-run `search()` every cycle.
-- **FR-18** Every reading MUST be **CRC-validated**; invalid readings and the `-127.0` sentinel
+- **FR-19** Every reading MUST be **CRC-validated**; invalid readings and the `-127.0` sentinel
   (loose/disconnected sensor) MUST be rejected and not displayed/logged as real data.
-- **FR-19** Temperature MUST be read on a sensible interval (a few seconds), using **non-blocking**
+- **FR-20** Temperature MUST be read on a sensible interval (a few seconds), using **non-blocking**
   conversion (start conversion, read result on a later cycle — no blocking `delay(750)`).
-- **FR-20** Persistent sensor fault (repeated invalid reads) MUST raise a sensor-fault alert.
+- **FR-21** Persistent sensor fault (repeated invalid reads) MUST raise a sensor-fault alert.
 
 ### 2.6 Extreme-Temperature Safety & Alerts
-- **FR-21** Configurable thresholds. **Defaults: low = 20 °C, high = 31 °C.**
-- **FR-22** When temperature crosses a threshold (or sensor fault occurs), device MUST:
-  1. Trigger the **buzzer + notification** (local + push if cloud-connected), and
-  2. Take a **safety action**: cut the heater channel relay on a high-temp/fault condition.
-- **FR-23** Alerts MUST clear/auto-recover when temperature returns to the safe band, with
+- **FR-22** Configurable thresholds with **hardcoded defaults (low = 20 °C, high = 31 °C)** that the
+  user MAY modify via the app; modified values MUST persist in NVS (non-volatile) and survive
+  reboots.
+- **FR-23** When temperature crosses a threshold (or sensor fault occurs), device MUST:
+  1. Trigger the **buzzer + app notification** (local + push if cloud-connected), and
+  2. Take a **safety action**: de-energize every channel flagged as a **heater-cut target**.
+- **FR-24** The **heater-cut target** is chosen **per channel during onboarding** (a provisioned
+  `cutOnOverTemp` flag) and persisted in NVS. A persistent **sensor fault** MUST also trigger the
+  cut (temperature can no longer be verified → fail safe).
+- **FR-25** Alerts MUST clear/auto-recover when temperature returns to the safe band, with
   hysteresis to avoid flapping.
 
 ### 2.7 Notifications / Alerting (shared mechanism)
-- **FR-24** A single reusable notification routine MUST handle all alert conditions
-  (RTC failure, NTP failure, sensor fault, extreme temp), driving the buzzer pattern and, when
-  connected, sending an app/push notification.
-- **FR-25** Alerts MUST NOT trap the device in an unrecoverable loop (the legacy
+- **FR-26** A single reusable alert manager MUST handle all alert conditions (RTC failure, NTP
+  failure, sensor fault, extreme high/low temp). It MUST expose the active alert set so the app/API
+  can notify the user (FR-23).
+- **FR-27** The buzzer MUST signal alerts with a **criticality-distinct pattern** (e.g. number of
+  short beeps and/or beep duration scales with severity), non-blocking.
+- **FR-28** Alerts MUST NOT trap the device in an unrecoverable loop (the legacy
   `while(true) buzzer HIGH` is removed); the main loop and watchdog MUST keep running.
 
 ### 2.8 Display (OLED SSD1306 128×32)
-- **FR-26** Display MUST show time/date, channel states, and temperature in a **clean, even
+- **FR-27** Display MUST show time/date, channel states, and temperature in a **clean, even
   rotation**.
-- **FR-27** Display MUST show connection/provisioning status (WiFi/cloud/BLE) and active alerts.
+- **FR-28** Display MUST show connection/provisioning status (WiFi/cloud/BLE) and active alerts.
 
 ### 2.9 Logging
-- **FR-28** Logging MUST be **on-demand**: the device records/streams logs only when the app
+- **FR-29** Logging MUST be **on-demand**: the device records/streams logs only when the app
   requests them (no continuous flood). No always-on serial spam in production.
-- **FR-29** **Premium tier:** logs MAY be stored locally on an **SD card** when hardware is present.
-- **FR-30** **Subscription tier:** logs MAY be uploaded to **cloud storage** for history/analytics.
-- **FR-31** Basic tier needs no persistent log storage.
+- **FR-30** **Premium tier:** logs MAY be stored locally on an **SD card** when hardware is present.
+- **FR-31** **Subscription tier:** logs MAY be uploaded to **cloud storage** for history/analytics.
+- **FR-32** Basic tier needs no persistent log storage.
 
 ### 2.10 Configuration & Web UI App
-- **FR-32** A companion **Web UI app** MUST support **CRUD** on schedules and channel config,
+- **FR-33** A companion **Web UI app** MUST support **CRUD** on schedules and channel config,
   login, and device connection/pairing.
-- **FR-33** Configuration changes MUST persist on-device (NVS) and apply without reflashing.
-- **FR-34** The device MUST expose a versioned local API (HTTP/WebSocket) for the app; the same
+- **FR-34** Configuration changes MUST persist on-device (NVS) and apply without reflashing.
+- **FR-35** The device MUST expose a versioned local API (HTTP/WebSocket) for the app; the same
   operations SHOULD be reachable via cloud when subscribed.
 
 ### 2.11 Authentication
-- **FR-35** Auth MUST use a **cloud account** (email/password) that can manage **multiple devices**
+- **FR-36** Auth MUST use a **cloud account** (email/password) that can manage **multiple devices**
   per user.
-- **FR-36** Local-network control MUST remain possible via a device-paired credential/token so the
+- **FR-37** Local-network control MUST remain possible via a device-paired credential/token so the
   app works on LAN even if the cloud is unreachable.
 
 ### 2.12 OTA Updates
-- **FR-37** Device MUST support **OTA firmware updates**.
-- **FR-38** OTA images MUST be **integrity- and authenticity-verified** (signed) before being
+- **FR-38** Device MUST support **OTA firmware updates**.
+- **FR-39** OTA images MUST be **integrity- and authenticity-verified** (signed) before being
   applied; failed/invalid updates MUST roll back to the previous working firmware.
 
 ---
@@ -160,7 +191,7 @@ The product ships in tiers:
 | Component | Part | Interface | Notes |
 |-----------|------|-----------|-------|
 | MCU | ESP32 | — | WiFi + BLE |
-| RTC | DS1307 | I²C | NTP-synced, offline authority |
+| RTC | DS3231 | I²C | Temp-compensated, NTP-synced, offline authority |
 | Temp sensor | DS18B20 | OneWire | CRC-validated, fixed address |
 | Display | SSD1306 128×32 | I²C | Status + rotation |
 | Relays | N channels | GPIO | NO/NC configurable per channel |
@@ -188,8 +219,34 @@ The product ships in tiers:
 ---
 
 ## 6. Open / Future Items
-- Exact local API surface (HTTP routes / WebSocket message schema) — to be specified.
-- Cloud backend architecture and protocol (MQTT vs WebSocket) — to be specified.
+- Cloud backend architecture and protocol (MQTT vs WebSocket) — to be specified (M3).
 - Number/default mapping of relay channels for shipping SKUs.
 - Notification delivery provider (push service) for the subscription tier.
-- Buzzer alert patterns per alert type (distinct tones).
+- Local API endpoint/message schema detail — to be finalized during M2 API work.
+
+---
+
+## 7. Architecture Decisions (M2 Connectivity)
+
+> Connectivity is strictly **additive**: it must never block or break standalone scheduling
+> (FR-1/FR-4). Decisions below are the agreed industry-standard approach for the commercial build.
+
+- **AD-1 Concurrency:** control logic runs in the existing cooperative loop (core 1); networking
+  (WiFi/NTP/web server) runs in a dedicated **FreeRTOS task** (core 0). Config writes from the API
+  reach the control side through a **single apply-queue** (one hand-off point) rather than ad-hoc
+  shared-state locking. WiFi+NTP, having no shared mutable state, may be serviced cooperatively
+  until the web server is introduced.
+- **AD-2 Timezone:** **POSIX TZ string** via the ESP32 `configTzTime()` path (DST-aware); stored in
+  NVS, default `UTC0` (see FR-7a).
+- **AD-3 LAN transport:** **REST** (`/api/v1/...`) for CRUD + **WebSocket** for live state push
+  (channel states, temperature, alerts) so the app updates without polling.
+- **AD-4 LAN security:** **HTTP + per-device bearer token** on the LAN (token issued during BLE
+  provisioning, stored in NVS, required on every request). TLS is provided by the **cloud** path
+  (M3) for remote access. Accepted tradeoff: no local TLS to avoid on-device cert management;
+  mitigated by the token + network boundary (revisit if threat model changes).
+- **AD-5 Web server:** `ESPAsyncWebServer` (async, WebSocket-capable).
+- **AD-6 BLE provisioning:** a GATT service (scan results, SSID, password, TZ, issued device-token)
+  with BLE bonding for link encryption; BLE stack shut down after WiFi is confirmed to reclaim RAM.
+- **AD-7 M2 build order:** WiFi+NTP → Local API + auth token → BLE provisioning. (BLE delivers the
+  creds/token the other two consume, so their contracts are defined first.)
+
