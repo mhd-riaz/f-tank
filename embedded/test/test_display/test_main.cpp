@@ -67,6 +67,26 @@ void test_format_channel_states_truncates_safely() {
     TEST_ASSERT_TRUE(strlen(buf) < sizeof(buf));  // never overflows
 }
 
+void test_format_temperature_negative() {
+    char buf[16];
+    formatTemperature(buf, sizeof(buf), -3.24f, true);
+    TEST_ASSERT_EQUAL_STRING("Temp: -3.2 C", buf);  // sign + one decimal preserved
+}
+
+void test_format_time_midnight() {
+    char buf[12];
+    WallClock wc;  // all-zero -> 1970-01-01 00:00:00
+    formatTime(buf, sizeof(buf), wc);
+    TEST_ASSERT_EQUAL_STRING("00:00:00", buf);
+}
+
+void test_format_channel_states_zero_count() {
+    char buf[16];
+    bool states[1] = {true};
+    formatChannelStates(buf, sizeof(buf), states, 0);
+    TEST_ASSERT_EQUAL_STRING("Ch:", buf);  // header only, no digits
+}
+
 void test_ascii_only_no_degree_symbol() {
     char buf[16];
     formatTemperature(buf, sizeof(buf), 25.0f, true);
@@ -86,6 +106,9 @@ int main(int, char**) {
     RUN_TEST(test_format_temperature_invalid);
     RUN_TEST(test_format_channel_states);
     RUN_TEST(test_format_channel_states_truncates_safely);
+    RUN_TEST(test_format_temperature_negative);
+    RUN_TEST(test_format_time_midnight);
+    RUN_TEST(test_format_channel_states_zero_count);
     RUN_TEST(test_ascii_only_no_degree_symbol);
     return UNITY_END();
 }

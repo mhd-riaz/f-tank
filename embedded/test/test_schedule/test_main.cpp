@@ -5,7 +5,9 @@
 
 using schedule::ChannelSchedule;
 using schedule::isEnergizedAt;
+using schedule::isValidWindow;
 using schedule::isWindowActive;
+using schedule::kMaxMinuteOfDay;
 using schedule::Scheduler;
 using schedule::TimeWindow;
 
@@ -67,6 +69,42 @@ void test_inverted_empty_is_always_on() {
     TEST_ASSERT_TRUE(isEnergizedAt(s, 720));
 }
 
+void test_valid_window_bounds() {
+    TEST_ASSERT_TRUE(isValidWindow(TimeWindow{0, 0}));                              // in range
+    TEST_ASSERT_TRUE(isValidWindow(TimeWindow{kMaxMinuteOfDay, kMaxMinuteOfDay}));  // max edge
+    TEST_ASSERT_TRUE(isValidWindow(TimeWindow{0, kMaxMinuteOfDay}));
+    TEST_ASSERT_FALSE(isValidWindow(TimeWindow{0, 1440}));     // end out of range
+    TEST_ASSERT_FALSE(isValidWindow(TimeWindow{1440, 0}));     // start out of range
+    TEST_ASSERT_FALSE(isValidWindow(TimeWindow{2000, 3000}));  // both out of range
+}
+
+void test_energized_clamps_excess_window_count() {
+    // windowCount above the array bound must be clamped, not over-read.
+    ChannelSchedule s;
+    s.windows[0] = {630, 870};
+    s.windowCount = 200;  // absurd; evaluator clamps to kMaxWindowsPerChannel
+    s.inverted = false;
+    TEST_ASSERT_TRUE(isEnergizedAt(s, 700));   // first window still honored
+    TEST_ASSERT_FALSE(isEnergizedAt(s, 900));  // outside any real window
+}
+
+void test_scheduler_channel_count_clamped() {
+    Scheduler sch;
+    sch.setChannelCount(250);  // far above kMaxChannels
+    TEST_ASSERT_TRUE(sch.channelCount() <= channel::kMaxChannels);
+}
+
+void test_scheduler_desired_state_out_of_range_is_off() {
+    Scheduler sch;
+    sch.setChannelCount(2);
+    sch.schedule(0).windowCount = 0;
+    sch.schedule(0).inverted = true;  // ch0 always ON
+    // In-range index respects schedule; out-of-range index must be OFF (guard).
+    TEST_ASSERT_TRUE(sch.desiredState(0, 720));
+    TEST_ASSERT_FALSE(sch.desiredState(2, 720));    // == count
+    TEST_ASSERT_FALSE(sch.desiredState(200, 720));  // far out of range
+}
+
 void test_scheduler_compute_all() {
     Scheduler sch;
     sch.setChannelCount(2);
@@ -95,6 +133,10 @@ int main(int, char**) {
     RUN_TEST(test_normal_multiwindow_light);
     RUN_TEST(test_inverted_pump);
     RUN_TEST(test_inverted_empty_is_always_on);
+    RUN_TEST(test_valid_window_bounds);
+    RUN_TEST(test_energized_clamps_excess_window_count);
+    RUN_TEST(test_scheduler_channel_count_clamped);
+    RUN_TEST(test_scheduler_desired_state_out_of_range_is_off);
     RUN_TEST(test_scheduler_compute_all);
     return UNITY_END();
 }

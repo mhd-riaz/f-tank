@@ -45,6 +45,19 @@ inline bool isPlausibleCelsius(float c) {
     return c > -55.0f && c < 125.0f;
 }
 
+/// Defense-in-depth aquarium-water band. Tighter than the DS18B20 electrical
+/// range above: it rejects readings that are valid for the chip but impossible
+/// for a real tank — most importantly the sensor's 85.0 C power-on-reset value,
+/// which passes isPlausibleCelsius(). Bounds bracket the full configurable alert
+/// range (-10..60 C, see api::isValidThresholds) plus headroom so a legitimately
+/// configured high reading is never discarded.
+constexpr float kAquariumMinC = -10.0f;
+constexpr float kAquariumMaxC = 70.0f;
+
+inline bool isPlausibleAquariumCelsius(float c) {
+    return c >= kAquariumMinC && c <= kAquariumMaxC;
+}
+
 }  // namespace sensor
 
 #endif  // SENSOR_DS18B20_MATH_H

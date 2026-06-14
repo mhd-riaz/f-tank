@@ -5,8 +5,10 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include "api/ApiValidation.h"
 #include "api/ConfigBroker.h"
 #include "api/StatusBroker.h"
+#include "log/EventLogger.h"
 #include "network/NetworkStore.h"
 #include "ota/OtaUpdater.h"
 #include "storage/PersistentConfig.h"
@@ -25,13 +27,15 @@ namespace api {
 class LocalApiServer {
   public:
     LocalApiServer(network::NetworkStore& netStore, ConfigBroker& configBroker,
-                   StatusBroker& statusBroker, ota::OtaUpdater& otaUpdater)
+                   StatusBroker& statusBroker, ota::OtaUpdater& otaUpdater,
+                   logging::EventLogger& eventLogger)
         : server_(80),
           ws_("/api/v1/ws"),
           netStore_(netStore),
           configBroker_(configBroker),
           statusBroker_(statusBroker),
-          ota_(otaUpdater) {}
+          ota_(otaUpdater),
+          logger_(eventLogger) {}
 
     /// Register routes and start listening. Call once WiFi is connected.
     void begin();
@@ -47,12 +51,24 @@ class LocalApiServer {
         return ota_.rebootPending();
     }
 
+    /// Scope of a pending factory/wifi reset request (FR-10), or kNone.
+    ResetScope pendingReset() const {
+        return resetScope_;
+    }
+
+    /// True when a reset has been requested AND its grace period (for the HTTP
+    /// response to flush) has elapsed, so the control loop may wipe + reboot.
+    bool resetDue(uint32_t nowMs) const;
+
   private:
     bool authorize(AsyncWebServerRequest* request) const;
     void handleGetInfo(AsyncWebServerRequest* request);
     void handleGetStatus(AsyncWebServerRequest* request);
     void handleGetConfig(AsyncWebServerRequest* request);
     void handlePutConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len);
+    void handleGetLogs(AsyncWebServerRequest* request);
+    void handleSetRecording(AsyncWebServerRequest* request, uint8_t* data, size_t len);
+    void handleReset(AsyncWebServerRequest* request, uint8_t* data, size_t len);
     void handleOtaUpload(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index,
                          size_t total);
     void registerRoutes();
@@ -64,11 +80,14 @@ class LocalApiServer {
     ConfigBroker& configBroker_;
     StatusBroker& statusBroker_;
     ota::OtaUpdater& ota_;
+    logging::EventLogger& logger_;
 
     SemaphoreHandle_t configMutex_ = nullptr;
     storage::PersistentConfig configView_;
     bool started_ = false;
     uint32_t lastPushMs_ = 0;
+    ResetScope resetScope_ = ResetScope::kNone;
+    uint32_t resetAtMs_ = 0;
 };
 
 }  // namespace api

@@ -91,6 +91,28 @@ inline bool isValidChannelIndex(uint8_t index, uint8_t channelCount) {
     return index < channelCount;
 }
 
+/// Scope of a factory-reset request (FR-10).
+enum class ResetScope : uint8_t {
+    kNone = 0,        ///< unrecognized / not requested
+    kForgetWifi = 1,  ///< clear WiFi creds + device token only (re-provision)
+    kFactory = 2,     ///< full wipe: creds, token, config defaults, logs, cloud
+};
+
+/// Parse a reset-scope string from the API. Unknown values map to kNone so the
+/// caller rejects them (never silently performs an unintended wipe, NFR-8).
+inline ResetScope parseResetScope(const char* s) {
+    if (s == nullptr) {
+        return ResetScope::kNone;
+    }
+    if (strcmp(s, "wifi") == 0) {
+        return ResetScope::kForgetWifi;
+    }
+    if (strcmp(s, "factory") == 0) {
+        return ResetScope::kFactory;
+    }
+    return ResetScope::kNone;
+}
+
 }  // namespace api
 
 #endif  // API_API_VALIDATION_H

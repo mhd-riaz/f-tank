@@ -35,6 +35,10 @@ class ConfigStore {
     /// Returns true if a write occurred.
     bool save();
 
+    /// Restore factory defaults and persist them (factory reset, FR-10).
+    /// Returns true if the defaults were written successfully.
+    bool reset();
+
   private:
     bool writeBlob(const PersistentConfig& cfg);
 

@@ -4,6 +4,7 @@
 
 #include "api/ApiValidation.h"
 #include "api/AuthToken.h"
+#include "log/LogTypes.h"
 #include "network/NetworkStore.h"
 #include "ota/FirmwareVersion.h"
 #include "ota/OtaTypes.h"
@@ -12,6 +13,10 @@ namespace api {
 namespace {
 
 constexpr char kFirmwareVersion[] = "2.0.0-dev";
+
+// Grace period after a reset request before the control loop wipes + reboots,
+// so the 202 response reliably flushes to the app first.
+constexpr uint32_t kResetGraceMs = 500;
 
 void serializeStatus(const StatusSnapshot& s, JsonObject obj) {
     obj["tempC"] = s.temperatureValid ? s.temperatureC : (float)-127.0;
@@ -59,6 +64,19 @@ void sendJsonError(AsyncWebServerRequest* request, int code, const char* msg) {
     res->setCode(code);
     serializeJson(doc, *res);
     request->send(res);
+}
+
+void serializeLogRecord(const logging::LogRecord& r, JsonObject obj) {
+    obj["epoch"] = r.epoch;
+    obj["min"] = r.minuteOfDay;
+    obj["type"] = r.type;
+    obj["arg"] = r.arg;
+    if (r.type == static_cast<uint8_t>(logging::LogEventType::kTemperature)) {
+        obj["tempC"] = static_cast<float>(r.centiCelsius) / 100.0f;
+    }
+    if (r.detail != 0) {
+        obj["detail"] = r.detail;
+    }
 }
 
 }  // namespace
@@ -132,6 +150,34 @@ void LocalApiServer::registerRoutes() {
         // Read-only live push; inbound WS messages are ignored.
     });
     server_.addHandler(&ws_);
+
+    // On-demand event logs (FR-29): retrieve buffered records / toggle recording.
+    server_.on("/api/v1/logs", HTTP_GET,
+               [this](AsyncWebServerRequest* request) { handleGetLogs(request); });
+    server_.on(
+        "/api/v1/logs/recording", HTTP_POST,
+        [](AsyncWebServerRequest* request) { /* response sent from body handler */ }, nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index,
+               size_t total) {
+            if (index == 0 && len == total) {
+                handleSetRecording(request, data, len);
+            } else {
+                sendJsonError(request, 413, "body too large");
+            }
+        });
+
+    // Factory reset / forget-WiFi (FR-10): confirm-gated; control loop wipes NVS.
+    server_.on(
+        "/api/v1/reset", HTTP_POST,
+        [](AsyncWebServerRequest* request) { /* response sent from body handler */ }, nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index,
+               size_t total) {
+            if (index == 0 && len == total) {
+                handleReset(request, data, len);
+            } else {
+                sendJsonError(request, 413, "body too large");
+            }
+        });
 
     // Signed OTA upload (FR-38/39): metadata in headers, firmware in the body.
     server_.on(
@@ -298,6 +344,79 @@ void LocalApiServer::handlePutConfig(AsyncWebServerRequest* request, uint8_t* da
     request->send(202, "application/json", "{\"status\":\"accepted\"}");
 }
 
+void LocalApiServer::handleGetLogs(AsyncWebServerRequest* request) {
+    if (!authorize(request)) {
+        sendJsonError(request, 401, "unauthorized");
+        return;
+    }
+    logging::LogRecord records[logging::kLogRingCapacity];
+    bool recording = false;
+    uint16_t persisted = 0;
+    const uint8_t n = logger_.snapshot(records, logging::kLogRingCapacity, recording, persisted);
+
+    JsonDocument doc;
+    doc["recording"] = recording;
+    doc["persisted"] = persisted;
+    doc["count"] = n;
+    JsonArray arr = doc["records"].to<JsonArray>();
+    for (uint8_t i = 0; i < n; ++i) {
+        serializeLogRecord(records[i], arr.add<JsonObject>());
+    }
+    AsyncResponseStream* res = request->beginResponseStream("application/json");
+    serializeJson(doc, *res);
+    request->send(res);
+}
+
+void LocalApiServer::handleSetRecording(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    if (!authorize(request)) {
+        sendJsonError(request, 401, "unauthorized");
+        return;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, data, len) != DeserializationError::Ok) {
+        sendJsonError(request, 400, "invalid json");
+        return;
+    }
+    if (doc["clear"].is<bool>() && doc["clear"].as<bool>()) {
+        logger_.clear();
+    }
+    if (doc["enabled"].is<bool>()) {
+        logger_.setRecording(doc["enabled"].as<bool>());
+    }
+    JsonDocument out;
+    out["recording"] = logger_.recording();
+    AsyncResponseStream* res = request->beginResponseStream("application/json");
+    serializeJson(out, *res);
+    request->send(res);
+}
+
+void LocalApiServer::handleReset(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    if (!authorize(request)) {
+        sendJsonError(request, 401, "unauthorized");
+        return;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, data, len) != DeserializationError::Ok) {
+        sendJsonError(request, 400, "invalid json");
+        return;
+    }
+    // Destructive op: require an explicit confirmation flag (NFR-8).
+    if (!(doc["confirm"].is<bool>() && doc["confirm"].as<bool>())) {
+        sendJsonError(request, 400, "confirm required");
+        return;
+    }
+    const char* scopeStr =
+        doc["scope"].is<const char*>() ? doc["scope"].as<const char*>() : "factory";
+    const ResetScope scope = parseResetScope(scopeStr);
+    if (scope == ResetScope::kNone) {
+        sendJsonError(request, 400, "invalid scope");
+        return;
+    }
+    resetScope_ = scope;
+    resetAtMs_ = millis();
+    request->send(202, "application/json", "{\"status\":\"resetting\"}");
+}
+
 void LocalApiServer::handleOtaUpload(AsyncWebServerRequest* request, uint8_t* data, size_t len,
                                      size_t index, size_t total) {
     // First chunk: authorize, parse headers, and open the OTA session.
@@ -388,6 +507,10 @@ void LocalApiServer::loop(uint32_t nowMs) {
         lastPushMs_ = nowMs;
         pushStatusToClients();
     }
+}
+
+bool LocalApiServer::resetDue(uint32_t nowMs) const {
+    return resetScope_ != ResetScope::kNone && (nowMs - resetAtMs_) >= kResetGraceMs;
 }
 
 }  // namespace api

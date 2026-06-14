@@ -54,6 +54,32 @@ void test_no_flap_without_hysteresis_breach() {
                       static_cast<int>(evaluateBand(30.9f, thresholds(), true, false)));
 }
 
+void test_high_takes_precedence_when_both_latched() {
+    // If both flags are latched, a high reading must resolve to kHigh (heater
+    // cut is the safety-critical action and is evaluated first).
+    TEST_ASSERT_EQUAL(static_cast<int>(TempBand::kHigh),
+                      static_cast<int>(evaluateBand(31.0f, thresholds(), true, true)));
+    // A safe-middle reading with both latched clears to safe.
+    TEST_ASSERT_EQUAL(static_cast<int>(TempBand::kSafe),
+                      static_cast<int>(evaluateBand(25.0f, thresholds(), true, true)));
+}
+
+void test_exact_high_hysteresis_boundary_holds() {
+    // Latched high clears only BELOW high - hysteresis (30.5). Exactly 30.5 holds.
+    TEST_ASSERT_EQUAL(static_cast<int>(TempBand::kHigh),
+                      static_cast<int>(evaluateBand(30.5f, thresholds(), true, false)));
+    TEST_ASSERT_EQUAL(static_cast<int>(TempBand::kSafe),
+                      static_cast<int>(evaluateBand(30.49f, thresholds(), true, false)));
+}
+
+void test_exact_low_hysteresis_boundary_holds() {
+    // Latched low clears only ABOVE low + hysteresis (20.5). Exactly 20.5 holds.
+    TEST_ASSERT_EQUAL(static_cast<int>(TempBand::kLow),
+                      static_cast<int>(evaluateBand(20.5f, thresholds(), false, true)));
+    TEST_ASSERT_EQUAL(static_cast<int>(TempBand::kSafe),
+                      static_cast<int>(evaluateBand(20.51f, thresholds(), false, true)));
+}
+
 void test_severity_mapping() {
     TEST_ASSERT_EQUAL(static_cast<int>(Severity::kCritical),
                       static_cast<int>(severityOf(AlertId::kHighTemp)));
@@ -63,6 +89,11 @@ void test_severity_mapping() {
                       static_cast<int>(severityOf(AlertId::kLowTemp)));
     TEST_ASSERT_EQUAL(static_cast<int>(Severity::kInfo),
                       static_cast<int>(severityOf(AlertId::kNtpFailure)));
+}
+
+void test_severity_rtc_is_warning() {
+    TEST_ASSERT_EQUAL(static_cast<int>(Severity::kWarning),
+                      static_cast<int>(severityOf(AlertId::kRtcFailure)));
 }
 
 }  // namespace
@@ -75,6 +106,10 @@ int main(int, char**) {
     RUN_TEST(test_high_hysteresis_holds);
     RUN_TEST(test_low_hysteresis_holds);
     RUN_TEST(test_no_flap_without_hysteresis_breach);
+    RUN_TEST(test_high_takes_precedence_when_both_latched);
+    RUN_TEST(test_exact_high_hysteresis_boundary_holds);
+    RUN_TEST(test_exact_low_hysteresis_boundary_holds);
     RUN_TEST(test_severity_mapping);
+    RUN_TEST(test_severity_rtc_is_warning);
     return UNITY_END();
 }

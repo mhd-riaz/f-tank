@@ -92,7 +92,9 @@ void TemperatureSensor::readConversion() {
     }
 
     const float celsius = rawToCelsius(rawFromScratchpad(data[0], data[1]));
-    if (!isPlausibleCelsius(celsius)) {
+    // Layered fault rejection (FR-19): electrical range first, then the tighter
+    // aquarium-water band that also catches the 85 C power-on-reset value.
+    if (!isPlausibleCelsius(celsius) || !isPlausibleAquariumCelsius(celsius)) {
         registerFailure();
         return;
     }

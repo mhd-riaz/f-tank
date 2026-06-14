@@ -37,6 +37,30 @@ void test_parse_version_rejects_garbage() {
     TEST_ASSERT_FALSE(parseVersion(nullptr, v));
 }
 
+void test_parse_version_rejects_overflow() {
+    FirmwareVersion v;
+    // Each field must fit in uint16_t; 65536 overflows and is rejected.
+    TEST_ASSERT_FALSE(parseVersion("65536.0.0", v));
+    TEST_ASSERT_FALSE(parseVersion("0.65536.0", v));
+    TEST_ASSERT_FALSE(parseVersion("0.0.70000", v));
+}
+
+void test_parse_version_accepts_max_field() {
+    FirmwareVersion v;
+    TEST_ASSERT_TRUE(parseVersion("65535.65535.65535", v));
+    TEST_ASSERT_EQUAL_UINT16(65535, v.major);
+    TEST_ASSERT_EQUAL_UINT16(65535, v.minor);
+    TEST_ASSERT_EQUAL_UINT16(65535, v.patch);
+}
+
+void test_parse_version_zero() {
+    FirmwareVersion v;
+    TEST_ASSERT_TRUE(parseVersion("0.0.0", v));
+    TEST_ASSERT_EQUAL_UINT16(0, v.major);
+    TEST_ASSERT_EQUAL_UINT16(0, v.minor);
+    TEST_ASSERT_EQUAL_UINT16(0, v.patch);
+}
+
 void test_compare_version() {
     FirmwareVersion a{2, 1, 0};
     FirmwareVersion b{2, 0, 9};
@@ -91,6 +115,9 @@ int main(int, char**) {
     RUN_TEST(test_parse_version);
     RUN_TEST(test_parse_version_with_suffix);
     RUN_TEST(test_parse_version_rejects_garbage);
+    RUN_TEST(test_parse_version_rejects_overflow);
+    RUN_TEST(test_parse_version_accepts_max_field);
+    RUN_TEST(test_parse_version_zero);
     RUN_TEST(test_compare_version);
     RUN_TEST(test_is_newer_anti_rollback);
     RUN_TEST(test_hex_decode_valid);

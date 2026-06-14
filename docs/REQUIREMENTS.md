@@ -290,6 +290,10 @@ API is fully locked until a token is provisioned. Plain HTTP on the LAN (AD-4). 
 | GET | `/api/v1/status` | Live: temp, alerts, time source, WiFi state, channel states |
 | GET | `/api/v1/config` | Full config (tz, thresholds, per-channel name/enable/schedule + read-only polarity) |
 | PUT | `/api/v1/config` | Update user-editable fields only (tz, thresholds, channel name/enable/schedule); polarity/gpio/cut-target stay as provisioned (FR-12) |
+| GET | `/api/v1/logs` | On-demand event log: buffered records + recording flag + persisted count (FR-29) |
+| POST | `/api/v1/logs/recording` | Toggle on-demand recording / clear the log buffer (FR-29) |
+| POST | `/api/v1/reset` | Factory reset or forget-WiFi; `confirm:true` required, `scope:"wifi"\|"factory"` (FR-10) |
+| POST | `/api/v1/ota` | Signed firmware upload (metadata in headers, image in body) (FR-38/39) |
 | WS | `/api/v1/ws` | Live status push (~1 Hz) |
 
 Auth failures → `401`; invalid input → `400`; transient busy → `503`; accepted writes → `202`.

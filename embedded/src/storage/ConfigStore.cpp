@@ -48,6 +48,11 @@ bool ConfigStore::save() {
     return writeBlob(config_);
 }
 
+bool ConfigStore::reset() {
+    seedFactoryDefaults(config_);
+    return writeBlob(config_);
+}
+
 bool ConfigStore::writeBlob(const PersistentConfig& cfg) {
     uint8_t blob[kBlobSize] = {0};
     if (pack(cfg, blob, sizeof(blob)) != kBlobSize) {
