@@ -305,5 +305,25 @@ Auth failures → `401`; invalid input → `400`; transient busy → `503`; acce
   token to the app, then signals the control loop to (re)connect WiFi. All inputs are bounds-checked
   via the same validators as the local API.
 
+### 7.3 Signed OTA + rollback (FR-38/39)
+
+Enabled on **both** flash SKUs. Firmware is delivered via the local API and is authenticated before
+it can ever boot:
+
+- **Upload:** `POST /api/v1/ota` (bearer-authorized) streams the image to the **inactive** OTA slot.
+  Metadata travels in headers: `X-FW-Version`, `X-FW-SHA256`, `X-FW-Signature`.
+- **Integrity + authenticity:** the device computes the image SHA-256 incrementally, checks it
+  against `X-FW-SHA256`, then verifies an **ECDSA P-256** signature over that digest against an
+  **embedded public key** ([`src/config/ota_pubkey.h`](../src/config/ota_pubkey.h)). The private key
+  stays offline in the release pipeline ([`scripts/sign_firmware.sh`](../scripts/sign_firmware.sh)).
+- **Anti-rollback:** images that are not **strictly newer** than the running version are rejected.
+- **Rollback safety:** after activation + reboot, the new image must run healthy for a confirmation
+  window before it is marked valid; otherwise the bootloader **rolls back** to the previous slot. No
+  fault ever traps the device (FR-28). Boot is flicker-free (FR-13) — schedule state is restored
+  from NVS before outputs are enabled.
+- Verification failures (`kHashMismatch`, `kBadSignature`, `kNotNewer`, `kTooLarge`, …) abort the
+  session and return `400`; the running image is untouched.
+
+
 
 
