@@ -6,13 +6,13 @@ cloud). This is a **monorepo** holding the firmware, the cloud backend, and the 
 
 ## Monorepo layout
 
-| Folder | Concern | Status |
-| ------ | ------- | ------ |
-| `embedded/` | **ESP32 firmware** (PlatformIO) | active |
-| `server/` | Cloud backend (MQTT broker integration, REST API, device registry, logs) | planned |
-| `ui/` | Web UI app (CRUD over the local/cloud API) | planned |
-| `docs/` | **[REQUIREMENTS.md](../docs/REQUIREMENTS.md)** — shared, authoritative spec for all three | active |
-| `.github/` | Instructions + this file (shared) | active |
+| Folder      | Concern                                                                                   | Status  |
+| ----------- | ----------------------------------------------------------------------------------------- | ------- |
+| `embedded/` | **ESP32 firmware** (PlatformIO)                                                           | active  |
+| `server/`   | Cloud backend (MQTT broker integration, REST API, device registry, logs)                  | planned |
+| `ui/`       | Web UI app (CRUD over the local/cloud API)                                                | planned |
+| `docs/`     | **[REQUIREMENTS.md](../docs/REQUIREMENTS.md)** — shared, authoritative spec for all three | active  |
+| `.github/`  | Instructions + this file (shared)                                                         | active  |
 
 The three concerns share **one contract** (API schema, MQTT topics, config JSON) defined in
 `docs/REQUIREMENTS.md`. A cross-cutting change should update firmware + server + ui together.
