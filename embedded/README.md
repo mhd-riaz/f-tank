@@ -28,6 +28,7 @@ SKU features are selected by compile-time flags in [`src/config/features.h`](src
 | `alert/` | Reusable alert manager + non-blocking buzzer patterns |
 | `display/` | SSD1306 OLED rotation; pure ASCII formatters |
 | `storage/` | Versioned, CRC'd NVS config (`ConfigStore`) |
+| `log/` | On-demand event log: bounded RAM ring + LittleFS ring (8 MB only) |
 | `network/` | WiFi state machine + NTP; secure credential store |
 | `api/` | Local REST + WebSocket, bearer auth, validation, apply-queue brokers |
 | `provisioning/` | NimBLE GATT onboarding (WiFi creds + token) |

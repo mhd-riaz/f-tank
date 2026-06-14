@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "channel/ChannelController.h"
 #include "storage/FactoryDefaults.h"
 #include "storage/PersistentConfig.h"
 
@@ -81,6 +82,45 @@ void test_factory_defaults_match_legacy() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 31.0f, cfg.thresholds.highC);
 }
 
+void test_unpack_rejects_channel_count_overflow() {
+    // A blob with a valid CRC + version but an out-of-range channelCount must be
+    // rejected (bounds guard, NFR-8) rather than trusted and over-indexed.
+    PersistentConfig in;
+    seedFactoryDefaults(in);
+    in.channelCount = channel::kMaxChannels + 1;  // corrupt: too many channels
+    uint8_t blob[kBlobSize];
+    pack(in, blob, sizeof(blob));  // CRC computed over the bad value -> still "valid"
+
+    PersistentConfig out;
+    TEST_ASSERT_FALSE(unpack(blob, kBlobSize, out));
+}
+
+void test_unpack_accepts_max_channel_count() {
+    PersistentConfig in;
+    seedFactoryDefaults(in);
+    in.channelCount = channel::kMaxChannels;  // exactly the limit is allowed
+    uint8_t blob[kBlobSize];
+    pack(in, blob, sizeof(blob));
+
+    PersistentConfig out;
+    TEST_ASSERT_TRUE(unpack(blob, kBlobSize, out));
+    TEST_ASSERT_EQUAL_UINT8(channel::kMaxChannels, out.channelCount);
+}
+
+void test_factory_reset_is_idempotent() {
+    // ConfigStore::reset() reseeds via seedFactoryDefaults; reseeding from any
+    // prior (even mutated) state must yield the identical canonical config so a
+    // factory reset (FR-10) is deterministic.
+    PersistentConfig a;
+    seedFactoryDefaults(a);
+
+    PersistentConfig b;
+    b.channelCount = 99;  // simulate corrupted / user-modified state
+    b.thresholds.lowC = -999.0f;
+    seedFactoryDefaults(b);  // "reset"
+    TEST_ASSERT_EQUAL_INT(0, memcmp(&a, &b, sizeof(PersistentConfig)));
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -89,6 +129,9 @@ int main(int, char**) {
     RUN_TEST(test_unpack_rejects_bad_crc);
     RUN_TEST(test_unpack_rejects_version_mismatch);
     RUN_TEST(test_unpack_rejects_wrong_size);
+    RUN_TEST(test_unpack_rejects_channel_count_overflow);
+    RUN_TEST(test_unpack_accepts_max_channel_count);
     RUN_TEST(test_factory_defaults_match_legacy);
+    RUN_TEST(test_factory_reset_is_idempotent);
     return UNITY_END();
 }

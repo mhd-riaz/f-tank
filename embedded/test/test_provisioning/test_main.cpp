@@ -60,6 +60,43 @@ void test_invalid_tz_rejected() {
     TEST_ASSERT_EQUAL(static_cast<int>(SessionState::kInvalid), static_cast<int>(s.state()));
 }
 
+void test_oversized_password_rejected() {
+    ProvisioningSession s;
+    s.reset();
+    s.setSsid("Net");
+    char big[80];
+    for (int i = 0; i < 79; ++i)
+        big[i] = 'p';
+    big[79] = '\0';  // exceeds kPasswordSize (64)
+    TEST_ASSERT_FALSE(s.setPassword(big));
+    TEST_ASSERT_EQUAL(static_cast<int>(SessionState::kInvalid), static_cast<int>(s.state()));
+    TEST_ASSERT_FALSE(s.isReady());
+}
+
+void test_invalid_field_after_ready_drops_out() {
+    // Becoming ready then receiving a bad field must drop back out of ready
+    // (a half-valid session must never be committed).
+    ProvisioningSession s;
+    s.reset();
+    s.setSsid("Net");
+    s.setPassword("pass");
+    TEST_ASSERT_TRUE(s.isReady());
+    TEST_ASSERT_FALSE(s.setSsid(""));  // invalid SSID overwrite
+    TEST_ASSERT_FALSE(s.isReady());
+    TEST_ASSERT_EQUAL(static_cast<int>(SessionState::kInvalid), static_cast<int>(s.state()));
+}
+
+void test_reset_recovers_after_invalid() {
+    ProvisioningSession s;
+    s.reset();
+    TEST_ASSERT_FALSE(s.setSsid(""));  // -> kInvalid
+    s.reset();                         // start over
+    TEST_ASSERT_EQUAL(static_cast<int>(SessionState::kIdle), static_cast<int>(s.state()));
+    TEST_ASSERT_TRUE(s.setSsid("Net2"));
+    TEST_ASSERT_TRUE(s.setPassword("pw"));
+    TEST_ASSERT_TRUE(s.isReady());
+}
+
 void test_valid_tz_keeps_ready() {
     ProvisioningSession s;
     s.reset();
@@ -79,6 +116,9 @@ int main(int, char**) {
     RUN_TEST(test_open_network_empty_password_ok);
     RUN_TEST(test_empty_ssid_rejected);
     RUN_TEST(test_oversized_ssid_rejected);
+    RUN_TEST(test_oversized_password_rejected);
+    RUN_TEST(test_invalid_field_after_ready_drops_out);
+    RUN_TEST(test_reset_recovers_after_invalid);
     RUN_TEST(test_invalid_tz_rejected);
     RUN_TEST(test_valid_tz_keeps_ready);
     return UNITY_END();

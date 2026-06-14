@@ -1,12 +1,14 @@
 #include "control/SafetyController.h"
 
+#include "control/ControlLogic.h"
+
 namespace control {
 
 void SafetyController::begin() {
     cutTargetMask_ = 0;
     for (uint8_t i = 0; i < channels_.count(); ++i) {
         if (channels_.config(i).cutOnOverTemp) {
-            cutTargetMask_ |= static_cast<uint16_t>(1u << i);
+            cutTargetMask_ = setMaskBit(cutTargetMask_, i, true);
         }
     }
 }
@@ -17,7 +19,7 @@ void SafetyController::applyCut(bool cut) {
     }
     cutEngaged_ = cut;
     for (uint8_t i = 0; i < channels_.count(); ++i) {
-        if (cutTargetMask_ & (1u << i)) {
+        if (maskBit(cutTargetMask_, i)) {
             runner_.setForceOff(i, cut);  // runner keeps it off without flicker
         }
     }
@@ -33,7 +35,7 @@ void SafetyController::update() {
         lowActive_ = false;
         alerts_.set(alert::AlertId::kHighTemp, false);
         alerts_.set(alert::AlertId::kLowTemp, false);
-        applyCut(true);
+        applyCut(shouldCutHeater(true, false));
         return;
     }
 
@@ -51,7 +53,7 @@ void SafetyController::update() {
 
     // High temp is the dangerous case for livestock -> cut heater. Low temp
     // alerts only (cutting the heater would make a cold tank colder).
-    applyCut(highActive_);
+    applyCut(shouldCutHeater(false, highActive_));
 }
 
 }  // namespace control

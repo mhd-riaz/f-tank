@@ -88,6 +88,102 @@ void test_valid_channel_index() {
     TEST_ASSERT_FALSE(api::isValidChannelIndex(4, 4));
 }
 
+void test_parse_reset_scope() {
+    TEST_ASSERT_TRUE(api::parseResetScope("wifi") == api::ResetScope::kForgetWifi);
+    TEST_ASSERT_TRUE(api::parseResetScope("factory") == api::ResetScope::kFactory);
+}
+
+void test_parse_reset_scope_rejects_unknown() {
+    TEST_ASSERT_TRUE(api::parseResetScope("") == api::ResetScope::kNone);
+    TEST_ASSERT_TRUE(api::parseResetScope("Factory") == api::ResetScope::kNone);  // case-sensitive
+    TEST_ASSERT_TRUE(api::parseResetScope("all") == api::ResetScope::kNone);
+    TEST_ASSERT_TRUE(api::parseResetScope(nullptr) == api::ResetScope::kNone);
+}
+
+void test_thresholds_boundaries() {
+    // low must be strictly below high.
+    alert::TempThresholds eq;
+    eq.lowC = 25.0f;
+    eq.highC = 25.0f;
+    TEST_ASSERT_FALSE(api::isValidThresholds(eq));
+
+    // Hysteresis range is [0, 5].
+    alert::TempThresholds hNeg;
+    hNeg.hysteresisC = -0.1f;
+    TEST_ASSERT_FALSE(api::isValidThresholds(hNeg));
+    alert::TempThresholds hMax;
+    hMax.hysteresisC = 5.0f;
+    TEST_ASSERT_TRUE(api::isValidThresholds(hMax));
+    alert::TempThresholds hOver;
+    hOver.hysteresisC = 5.1f;
+    TEST_ASSERT_FALSE(api::isValidThresholds(hOver));
+}
+
+void test_thresholds_range_edges() {
+    // low boundary -10 inclusive, high boundary 60 inclusive.
+    alert::TempThresholds edge;
+    edge.lowC = -10.0f;
+    edge.highC = 60.0f;
+    TEST_ASSERT_TRUE(api::isValidThresholds(edge));
+
+    alert::TempThresholds lowUnder;
+    lowUnder.lowC = -10.1f;
+    lowUnder.highC = 40.0f;
+    TEST_ASSERT_FALSE(api::isValidThresholds(lowUnder));
+
+    alert::TempThresholds highOver;
+    highOver.lowC = 20.0f;
+    highOver.highC = 60.1f;
+    TEST_ASSERT_FALSE(api::isValidThresholds(highOver));
+}
+
+void test_channel_name_length_edges() {
+    // Longest accepted name = kChannelNameSize - 1 chars; one more is rejected.
+    char maxName[channel::kChannelNameSize];
+    memset(maxName, 'A', sizeof(maxName) - 1);
+    maxName[sizeof(maxName) - 1] = '\0';
+    TEST_ASSERT_TRUE(api::isValidChannelName(maxName));
+
+    char overName[channel::kChannelNameSize + 1];
+    memset(overName, 'A', sizeof(overName) - 1);
+    overName[sizeof(overName) - 1] = '\0';
+    TEST_ASSERT_FALSE(api::isValidChannelName(overName));
+}
+
+void test_channel_name_ascii_edges() {
+    TEST_ASSERT_TRUE(api::isValidChannelName(" "));      // 0x20 lowest printable
+    TEST_ASSERT_TRUE(api::isValidChannelName("~"));      // 0x7E highest printable
+    TEST_ASSERT_FALSE(api::isValidChannelName("\x7F"));  // DEL just above printable
+}
+
+void test_tz_length_edge() {
+    char maxTz[storage::kTzStringSize];
+    memset(maxTz, 'X', sizeof(maxTz) - 1);
+    maxTz[sizeof(maxTz) - 1] = '\0';
+    TEST_ASSERT_TRUE(api::isValidTz(maxTz));  // exactly fits
+
+    char overTz[storage::kTzStringSize + 1];
+    memset(overTz, 'X', sizeof(overTz) - 1);
+    overTz[sizeof(overTz) - 1] = '\0';
+    TEST_ASSERT_FALSE(api::isValidTz(overTz));
+}
+
+void test_extract_bearer_skips_extra_spaces() {
+    char out[49] = {0};
+    TEST_ASSERT_TRUE(api::extractBearerToken("Bearer    spacedtoken", out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING("spacedtoken", out);
+}
+
+void test_extract_bearer_exact_fit_buffer() {
+    // Buffer just large enough for "abc" + null.
+    char out[4] = {0};
+    TEST_ASSERT_TRUE(api::extractBearerToken("Bearer abc", out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING("abc", out);
+    // One char longer than the buffer can hold -> rejected, no overflow.
+    char out2[4] = {0};
+    TEST_ASSERT_FALSE(api::extractBearerToken("Bearer abcd", out2, sizeof(out2)));
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -103,5 +199,14 @@ int main(int, char**) {
     RUN_TEST(test_valid_channel_name);
     RUN_TEST(test_valid_tz);
     RUN_TEST(test_valid_channel_index);
+    RUN_TEST(test_parse_reset_scope);
+    RUN_TEST(test_parse_reset_scope_rejects_unknown);
+    RUN_TEST(test_thresholds_boundaries);
+    RUN_TEST(test_thresholds_range_edges);
+    RUN_TEST(test_channel_name_length_edges);
+    RUN_TEST(test_channel_name_ascii_edges);
+    RUN_TEST(test_tz_length_edge);
+    RUN_TEST(test_extract_bearer_skips_extra_spaces);
+    RUN_TEST(test_extract_bearer_exact_fit_buffer);
     return UNITY_END();
 }

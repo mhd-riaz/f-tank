@@ -23,6 +23,7 @@
 #include "control/SafetyController.h"
 #include "control/ScheduleRunner.h"
 #include "display/DisplayManager.h"
+#include "log/EventLogger.h"
 #include "network/NetworkStore.h"
 #include "network/NtpClient.h"
 #include "network/WiFiManager.h"
@@ -56,7 +57,8 @@ network::NtpClient ntpClient(timeService);
 api::ConfigBroker configBroker;
 api::StatusBroker statusBroker;
 ota::OtaUpdater otaUpdater;
-api::LocalApiServer apiServer(networkStore, configBroker, statusBroker, otaUpdater);
+logging::EventLogger eventLogger(timeService);
+api::LocalApiServer apiServer(networkStore, configBroker, statusBroker, otaUpdater, eventLogger);
 provisioning::BleProvisioner bleProvisioner(networkStore, configStore);
 #if FT_FEATURE_CLOUD
 cloud::CloudStore cloudStore;
@@ -68,6 +70,14 @@ bool wifiWasConnected = false;
 bool ntpConfigured = false;
 bool apiStarted = false;
 bool otaBootConfirmed = false;
+
+// On-demand event-log edge tracking (FR-29). Captured only while recording.
+bool prevEnergized[channel::kMaxChannels] = {false};
+uint16_t prevAlertMask = 0;
+uint8_t prevTimeSource = 0xFF;
+uint32_t lastTempLogMs = 0;
+// Throttle periodic temperature samples so logs don't flood (FR-29).
+constexpr uint32_t kTempLogIntervalMs = 60000;
 
 // Uptime after which a freshly-OTA'd image is considered healthy and confirmed
 // (cancels bootloader rollback). Long enough to clear init + first network use.
@@ -123,6 +133,43 @@ void publishStatus(uint32_t nowMs) {
     statusBroker.publish(snap);
 }
 
+// Detect state-change edges and feed them to the on-demand logger (FR-29).
+// The logger drops everything unless the app has enabled recording, so this is
+// cheap when idle. Must run after schedule/config have been applied this tick.
+void serviceEventLog(uint32_t nowMs) {
+    const uint8_t count = channels.count();
+    for (uint8_t i = 0; i < count; ++i) {
+        const bool energized = channels.isEnergized(i);
+        if (energized != prevEnergized[i]) {
+            eventLogger.logChannel(i, energized);
+            prevEnergized[i] = energized;
+        }
+    }
+
+    const uint16_t mask = alerts.activeMask();
+    if (mask != prevAlertMask) {
+        const uint16_t changed = static_cast<uint16_t>(mask ^ prevAlertMask);
+        for (uint8_t b = 0; b < alert::kAlertCount; ++b) {
+            const uint16_t bit = static_cast<uint16_t>(1u << b);
+            if (changed & bit) {
+                eventLogger.logAlert(b, (mask & bit) != 0, mask);
+            }
+        }
+        prevAlertMask = mask;
+    }
+
+    const uint8_t src = static_cast<uint8_t>(timeService.source());
+    if (src != prevTimeSource) {
+        eventLogger.logTimeSource(src);
+        prevTimeSource = src;
+    }
+
+    if (temperature.hasValidReading() && (nowMs - lastTempLogMs) >= kTempLogIntervalMs) {
+        eventLogger.logTemperature(temperature.celsius());
+        lastTempLogMs = nowMs;
+    }
+}
+
 // Apply a config staged by the API: persist, re-apply to hardware, republish.
 void applyStagedConfig() {
     storage::PersistentConfig incoming;
@@ -133,6 +180,7 @@ void applyStagedConfig() {
     configStore.save();  // write-on-change; persists user edits (FR-34)
     applyConfig(timeService.minutesSinceMidnight());
     apiServer.publishConfig(configStore.config());
+    eventLogger.logConfigApplied();
 }
 
 // Issue a device bearer token on first use if none exists yet. BLE provisioning
@@ -178,6 +226,14 @@ void setup() {
     maybeSeedDevWifi();
     configBroker.begin();
     statusBroker.begin();
+    eventLogger.begin();
+    // Seed edge-tracking so the first loop doesn't emit spurious log events.
+    for (uint8_t i = 0; i < channels.count(); ++i) {
+        prevEnergized[i] = channels.isEnergized(i);
+    }
+    prevAlertMask = alerts.activeMask();
+    prevTimeSource = static_cast<uint8_t>(timeService.source());
+    eventLogger.logBoot(static_cast<uint8_t>(timeErr));
     apiServer.publishConfig(configStore.config());
 #if FT_FEATURE_CLOUD
     cloudStore.begin();
@@ -253,9 +309,27 @@ void loop() {
         ESP.restart();
     }
 
+    // Factory reset / forget-WiFi requested via the API (FR-10). The control
+    // loop owns NVS, so it performs the wipe then reboots; on reboot, BLE
+    // provisioning re-advertises automatically because no WiFi creds remain.
+    if (apiServer.resetDue(nowMs)) {
+        networkStore.clear();  // forget WiFi creds + device token (re-provision)
+        if (apiServer.pendingReset() == api::ResetScope::kFactory) {
+            configStore.reset();  // schedules/thresholds back to factory defaults
+            eventLogger.clear();
+#if FT_FEATURE_CLOUD
+            cloudStore.clear();
+#endif
+        }
+        Serial.println("Factory reset complete; rebooting...");
+        Serial.flush();
+        ESP.restart();
+    }
+
     // Apply any config staged by the API and publish live status (AD-1).
     applyStagedConfig();
     publishStatus(nowMs);
+    serviceEventLog(nowMs);
 
     alerts.update(nowMs);
     displayManager.update(nowMs);
